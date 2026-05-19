@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { ContestService } from '../api/contest';
 import { StateManager } from '../utils/state';
 import { Contest } from '../types';
+import { getBaseUrl } from '../utils/config';
 
 /** 比赛列表 TreeDataProvider — 复用 home.js 比赛显示逻辑 */
 
@@ -54,6 +55,10 @@ export class ContestTreeProvider implements vscode.TreeDataProvider<ContestTreeI
 
     if (this.isLoading) {
       return [new ContestTreeItem('加载中...', 'loading', vscode.TreeItemCollapsibleState.None)];
+    }
+
+    if (getBaseUrl() === 'http://localhost') {
+      return [new ContestTreeItem('请先设置 OJ 平台地址，然后重启VSCode', 'config-hint', vscode.TreeItemCollapsibleState.None)];
     }
 
     if (!this.state.isLoggedIn()) {
@@ -151,6 +156,14 @@ export class ContestTreeItem extends vscode.TreeItem {
     } else if (itemType === 'login-hint') {
       this.iconPath = new vscode.ThemeIcon('warning');
       this.command = { command: 'oj.login', title: '登录' };
+      this.contextValue = '';
+    } else if (itemType === 'config-hint') {
+      this.iconPath = new vscode.ThemeIcon('warning');
+      this.command = {
+        command: 'workbench.action.openSettings',
+        title: '打开设置',
+        arguments: ['@ext:thebestskinhead.vsoj'],
+      };
       this.contextValue = '';
     } else if (itemType === 'empty') {
       this.iconPath = new vscode.ThemeIcon('info');
