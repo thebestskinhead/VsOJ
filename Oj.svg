@@ -1,4 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="300" height="200" viewBox="0 0 300 200">
-  <text x="90" y="125" font-family="Georgia, 'Times New Roman', serif" font-size="120" fill="#000000" font-weight="bold">O</text>
-  <text x="175" y="140" font-family="Georgia, 'Times New Roman', serif" font-size="80" fill="#000000" font-weight="bold">j</text>
+<svg width="50" height="50" xmlns="http://www.w3.org/2000/svg">
+
+ <g>
+  <title>Layer 1</title>
+  <text transform="matrix(1.9921 0 0 1.63396 -17.5253 -6.88228)" stroke="#000" xml:space="preserve" text-anchor="start" font-family="Noto Sans JP" font-size="24" id="svg_1" y="23.5233" x="7.90672" stroke-width="0" fill="#000000">O</text>
+  <text style="cursor: move;" transform="matrix(1.95719 0 0 1.93574 -19.3738 0.735781)" stroke="#000" xml:space="preserve" text-anchor="start" font-family="Noto Sans JP" font-size="24" id="svg_2" y="24.59627" x="24.19542" stroke-width="0" fill="#000000">J</text>
+ </g>
 </svg>

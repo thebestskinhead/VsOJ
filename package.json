@@ -5,6 +5,11 @@
   "version": "1.0.0",
   "icon": "Oj.png",
   "publisher": "oj-platform",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/thebestskinhead/VsOJ.git"
+  },
+  "license": "Apache-2.0",
   "engines": {
     "vscode": "^1.80.0"
   },
@@ -26,7 +31,7 @@
       "properties": {
         "oj.baseUrl": {
           "type": "string",
-          "default": "http://localhost",
+          "default": "http://acm.hnust.edu.cn",
           "description": "OJ 平台的 Base URL（例如 http://your-oj-server.com）"
         },
         "oj.defaultLanguage": {
