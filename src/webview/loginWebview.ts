@@ -35,7 +35,7 @@ export class LoginWebview {
     this.panel.webview.onDidReceiveMessage(async (message: any) => {
       switch (message.command) {
         case 'login':
-          await this.handleLogin(message.username, message.password, message.vcode);
+          await this.handleLogin(message.username, message.password, message.vcode, message.remember);
           break;
         case 'quickLogin':
           await this.handleQuickLogin(message.vcode);
@@ -45,6 +45,9 @@ export class LoginWebview {
           break;
         case 'loadAccount':
           await this.loadAccount();
+          break;
+        case 'openAccountSettings':
+          vscode.commands.executeCommand('oj.accountSettings');
           break;
       }
     });
@@ -86,11 +89,15 @@ export class LoginWebview {
     }
   }
 
-  private async handleLogin(username: string, password: string, vcode: string): Promise<void> {
+  private async handleLogin(username: string, password: string, vcode: string, remember?: boolean): Promise<void> {
     try {
       const success = await this.auth.login(username, password, vcode);
       this.postResult(success);
       if (success) {
+        // 记住我：登录成功时保存账号密码哈希
+        if (remember) {
+          await this.state.saveAccount(username, password);
+        }
         setTimeout(() => { this.panel?.dispose(); this.onLoginSuccess(); }, 800);
       } else {
         await this.loadVcode();
@@ -158,6 +165,11 @@ export class LoginWebview {
   .divider{display:flex;align-items:center;margin:12px 0;gap:10px}
   .divider::before,.divider::after{content:'';flex:1;border-bottom:1px solid #e0e0e0}
   .divider span{color:#aaa;font-size:11px}
+  .remember-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;font-size:12px;color:#888}
+  .remember-row label{display:flex;align-items:center;gap:6px;cursor:pointer;color:#666}
+  .remember-row input[type=checkbox]{accent-color:#4CAF50;width:14px;height:14px}
+  .manage-link{color:#4CAF50;cursor:pointer;text-decoration:underline}
+  .manage-link:hover{color:#2e7d32}
 </style></head>
 <body>
 <div class="box">
@@ -171,6 +183,10 @@ export class LoginWebview {
         <input type="text" id="vcode" placeholder="验证码" required maxlength="4" autocomplete="off">
         <img id="vcodeImg" src="" alt="验证码" title="点击刷新" onclick="refreshVcode()">
       </div>
+    </div>
+    <div class="remember-row">
+      <label><input type="checkbox" id="rememberMe"> 记住我（登录成功后保存账号）</label>
+      <span class="manage-link" onclick="openAccountSettings()">管理快捷登录</span>
     </div>
     <div class="btns">
       <button type="submit" class="btn-login" id="submitBtn">登 录</button>
@@ -188,7 +204,7 @@ export class LoginWebview {
 
   $('loginForm').addEventListener('submit',e=>{
     e.preventDefault();setBtns(false);show('',false);
-    v.postMessage({command:'login',username:$('username').value.trim(),password:$('password').value,vcode:$('vcode').value.trim()});
+    v.postMessage({command:'login',username:$('username').value.trim(),password:$('password').value,vcode:$('vcode').value.trim(),remember:$('rememberMe').checked});
   });
 
   function quickLogin(){
@@ -196,6 +212,10 @@ export class LoginWebview {
     if(!vc){show('请输入验证码',true);return}
     setBtns(false);show('',false);
     v.postMessage({command:'quickLogin',vcode:vc});
+  }
+
+  function openAccountSettings(){
+    v.postMessage({command:'openAccountSettings'});
   }
 
   window.addEventListener('message',e=>{
