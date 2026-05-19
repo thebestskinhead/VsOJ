@@ -1,0 +1,260 @@
+{
+  "name": "vsoj",
+  "displayName": "VsOJ",
+  "description": "VsOJ - 在线判题平台 VS Code 插件，支持浏览比赛、查看题目、提交代码、查询判题状态",
+  "version": "1.0.0",
+  "icon": "Oj.png",
+  "publisher": "oj-platform",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:oj.contests",
+    "onCommand:oj.login",
+    "onCommand:oj.submit",
+    "onCommand:oj.openSettings",
+    "onCommand:oj.accountSettings"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "VsOJ",
+      "properties": {
+        "oj.baseUrl": {
+          "type": "string",
+          "default": "http://localhost",
+          "description": "OJ 平台的 Base URL（例如 http://your-oj-server.com）"
+        },
+        "oj.defaultLanguage": {
+          "type": "string",
+          "default": "cpp",
+          "enum": [
+            "c",
+            "cpp",
+            "java"
+          ],
+          "description": "默认编程语言"
+        },
+        "oj.autoRefreshStatus": {
+          "type": "boolean",
+          "default": true,
+          "description": "提交后是否自动刷新状态面板"
+        },
+        "oj.statusRefreshInterval": {
+          "type": "number",
+          "default": 5000,
+          "description": "状态面板自动刷新间隔（毫秒）"
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "oj.login",
+        "title": "OJ: 登录",
+        "icon": "$(sign-in)"
+      },
+      {
+        "command": "oj.logout",
+        "title": "OJ: 登出",
+        "icon": "$(sign-out)"
+      },
+      {
+        "command": "oj.refreshContests",
+        "title": "OJ: 刷新比赛列表",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "oj.searchContests",
+        "title": "OJ: 搜索比赛",
+        "icon": "$(search)"
+      },
+      {
+        "command": "oj.enterContest",
+        "title": "OJ: 进入比赛"
+      },
+      {
+        "command": "oj.enterContestWithPid",
+        "title": "OJ: 进入比赛并指定题目"
+      },
+      {
+        "command": "oj.exitContest",
+        "title": "OJ: 退出比赛",
+        "icon": "$(arrow-left)"
+      },
+      {
+        "command": "oj.showProblem",
+        "title": "OJ: 查看题目"
+      },
+      {
+        "command": "oj.submit",
+        "title": "OJ: 提交代码",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "oj.refreshStatus",
+        "title": "OJ: 刷新提交状态",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "oj.toggleStatusAutoRefresh",
+        "title": "OJ: 开启/停止自动刷新状态",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "oj.toggleFavorite",
+        "title": "OJ: 收藏/取消收藏比赛"
+      },
+      {
+        "command": "oj.favoriteContest",
+        "title": "OJ: 收藏比赛（指定 CID）"
+      },
+      {
+        "command": "oj.refreshProblems",
+        "title": "OJ: 刷新题目列表",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "oj.debugShow",
+        "title": "OJ: 显示 Debug 日志",
+        "icon": "$(output)"
+      },
+      {
+        "command": "oj.debugToggle",
+        "title": "OJ: 启用/禁用 Debug",
+        "icon": "$(debug)"
+      },
+      {
+        "command": "oj.debugClear",
+        "title": "OJ: 清空 Debug 日志",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "oj.openSettings",
+        "title": "OJ: 打开设置",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "oj.accountSettings",
+        "title": "OJ: 账号设置",
+        "icon": "$(account)"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "oj.submit",
+        "key": "ctrl+shift+s",
+        "when": "oj.inContest"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "oj.login",
+          "when": "view == oj.contests && !oj.loggedIn",
+          "group": "navigation"
+        },
+        {
+          "command": "oj.logout",
+          "when": "view == oj.contests && oj.loggedIn",
+          "group": "navigation"
+        },
+        {
+          "command": "oj.searchContests",
+          "when": "view == oj.contests && oj.loggedIn",
+          "group": "navigation"
+        },
+        {
+          "command": "oj.refreshContests",
+          "when": "view == oj.contests",
+          "group": "navigation"
+        },
+        {
+          "command": "oj.accountSettings",
+          "when": "view == oj.contests",
+          "group": "navigation"
+        },
+        {
+          "command": "oj.openSettings",
+          "when": "view == oj.contests",
+          "group": "navigation"
+        },
+        {
+          "command": "oj.exitContest",
+          "when": "view == oj.problems && oj.inContest",
+          "group": "navigation"
+        },
+        {
+          "command": "oj.refreshProblems",
+          "when": "view == oj.problems && oj.inContest",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "oj.enterContest",
+          "when": "view == oj.contests && viewItem == contest"
+        },
+        {
+          "command": "oj.toggleFavorite",
+          "when": "view == oj.contests && viewItem == contest"
+        },
+        {
+          "command": "oj.showProblem",
+          "when": "view == oj.problems && viewItem == problem"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "oj.submit",
+          "when": "oj.inContest",
+          "group": "navigation"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "oj-sidebar",
+          "title": "VsOJ",
+          "icon": "Oj.svg"
+        }
+      ]
+    },
+    "views": {
+      "oj-sidebar": [
+        {
+          "id": "oj.contests",
+          "name": "比赛列表",
+          "contextualTitle": "OJ 比赛"
+        },
+        {
+          "id": "oj.problems",
+          "name": "题目列表",
+          "contextualTitle": "OJ 题目"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/cheerio": "^0.22.35",
+    "@types/node": "^20.19.41",
+    "@types/tough-cookie": "^4.0.5",
+    "@types/vscode": "^1.80.0",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "axios": "^1.16.1",
+    "axios-cookiejar-support": "^5.0.5",
+    "cheerio": "^1.2.0",
+    "tough-cookie": "^4.1.4"
+  }
+}
