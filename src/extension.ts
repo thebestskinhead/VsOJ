@@ -44,7 +44,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // 启动时检测是否配置了 OJ 地址
   if (getBaseUrl() === 'http://localhost') {
     vscode.window.showWarningMessage(
-      'VsOJ: 请先设置 OJ 平台地址，然后重启 VSCode',
+      'VsOJ Pro: 请先设置 OJ 平台地址，然后重启 VSCode',
       '打开设置',
     ).then(selection => {
       if (selection === '打开设置') {

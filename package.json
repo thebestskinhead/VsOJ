@@ -1,6 +1,6 @@
 {
   "name": "vsoj-pro",
-  "displayName": "VsOJ",
+  "displayName": "VsOJ Pro",
   "description": "VsOJ - 在线判题平台 VS Code 插件，支持浏览比赛、查看题目、提交代码、查询判题状态",
   "version": "1.0.4",
   "icon": "Oj.png",
@@ -40,7 +40,7 @@
   "main": "./out/extension.js",
   "contributes": {
     "configuration": {
-      "title": "VsOJ",
+      "title": "VsOJ Pro",
       "properties": {
         "oj.baseUrl": {
           "type": "string",
@@ -237,7 +237,7 @@
       "activitybar": [
         {
           "id": "oj-sidebar",
-          "title": "VsOJ",
+          "title": "VsOJ Pro",
           "icon": "Oj.svg"
         }
       ]
