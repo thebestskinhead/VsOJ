@@ -41,6 +41,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // 初始化 baseUrl
   apiClient.updateBaseUrl(getBaseUrl());
 
+  // 启动时检测是否配置了 OJ 地址
+  if (getBaseUrl() === 'http://localhost') {
+    vscode.window.showWarningMessage(
+      'VsOJ: 请先设置 OJ 平台地址',
+      '打开设置',
+    ).then(selection => {
+      if (selection === '打开设置') {
+        vscode.commands.executeCommand('workbench.action.openSettings', '@ext:thebestskinhead.vsoj');
+      }
+    });
+  }
+
   // 初始化 Debug 频道
   initDebugChannel();
   logInfo(`OJ 插件启动 — BaseURL: ${getBaseUrl()}`);
