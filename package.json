@@ -44,7 +44,7 @@
       "properties": {
         "oj.baseUrl": {
           "type": "string",
-          "default": "http://localhost",
+          "default": "http://acm.hnust.edu.cn",
           "description": "OJ 平台的 Base URL（例如 http://your-oj-server.com）"
         },
         "oj.defaultLanguage": {
