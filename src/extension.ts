@@ -48,7 +48,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       '打开设置',
     ).then(selection => {
       if (selection === '打开设置') {
-        vscode.commands.executeCommand('workbench.action.openSettings', '@ext:thebestskinhead.vsoj');
+        vscode.commands.executeCommand('workbench.action.openSettings', '@ext:thebestskinhead.vsoj-pro');
       }
     });
   }
@@ -100,7 +100,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // oj.openSettings — 直达 OJ 设置
   context.subscriptions.push(
     vscode.commands.registerCommand('oj.openSettings', () => {
-      vscode.commands.executeCommand('workbench.action.openSettings', '@ext:thebestskinhead.vsoj');
+      vscode.commands.executeCommand('workbench.action.openSettings', '@ext:thebestskinhead.vsoj-pro');
     })
   );
 

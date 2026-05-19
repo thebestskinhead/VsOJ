@@ -162,7 +162,7 @@ export class ContestTreeItem extends vscode.TreeItem {
       this.command = {
         command: 'workbench.action.openSettings',
         title: '打开设置',
-        arguments: ['@ext:thebestskinhead.vsoj'],
+        arguments: ['@ext:thebestskinhead.vsoj-pro'],
       };
       this.contextValue = '';
     } else if (itemType === 'empty') {
