@@ -88,7 +88,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // oj.openSettings — 直达 OJ 设置
   context.subscriptions.push(
     vscode.commands.registerCommand('oj.openSettings', () => {
-      vscode.commands.executeCommand('workbench.action.openSettings', '@ext:oj-platform.oj-vscode-extension');
+      vscode.commands.executeCommand('workbench.action.openSettings', '@ext:thebestskinhead.vsoj');
     })
   );
 

@@ -4,7 +4,7 @@
   "description": "VsOJ - 在线判题平台 VS Code 插件，支持浏览比赛、查看题目、提交代码、查询判题状态",
   "version": "1.0.0",
   "icon": "Oj.png",
-  "publisher": "oj-platform",
+  "publisher": "thebestskinhead",
   "repository": {
     "type": "git",
     "url": "https://github.com/thebestskinhead/VsOJ.git"
@@ -16,6 +16,19 @@
   "categories": [
     "Programming Languages",
     "Other"
+  ],
+  "keywords": [
+    "oj",
+    "online judge",
+    "ACM",
+    "ICPC",
+    "contest",
+    "编程竞赛",
+    "在线判题",
+    "刷题",
+    "算法竞赛",
+    "代码提交",
+    "vsoj"
   ],
   "activationEvents": [
     "onView:oj.contests",
@@ -31,7 +44,7 @@
       "properties": {
         "oj.baseUrl": {
           "type": "string",
-          "default": "http://acm.hnust.edu.cn",
+          "default": "http://localhost",
           "description": "OJ 平台的 Base URL（例如 http://your-oj-server.com）"
         },
         "oj.defaultLanguage": {
