@@ -2,7 +2,7 @@
   "name": "vsoj",
   "displayName": "VsOJ",
   "description": "VsOJ - 在线判题平台 VS Code 插件，支持浏览比赛、查看题目、提交代码、查询判题状态",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "icon": "Oj.png",
   "publisher": "thebestskinhead",
   "repository": {
