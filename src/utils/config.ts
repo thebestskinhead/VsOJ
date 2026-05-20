@@ -24,5 +24,5 @@ export function getStatusRefreshInterval(): number {
 }
 
 export function getStatusViewMode(): 'output' | 'webview' | 'browser' {
-  return getConfig().get<'output' | 'webview' | 'browser'>('statusViewMode', 'webview');
+  return getConfig().get<'output' | 'webview' | 'browser'>('statusViewMode', 'browser');
 }
