@@ -2,7 +2,7 @@
   "name": "vsoj-pro",
   "displayName": "VsOJ Pro",
   "description": "VsOJ - 在线判题平台 VS Code 插件，支持浏览比赛、查看题目、提交代码、查询判题状态",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "icon": "Oj.png",
   "publisher": "thebestskinhead",
   "repository": {
@@ -70,8 +70,16 @@
         "oj.statusViewMode": {
           "type": "string",
           "default": "browser",
-          "enum": ["output", "webview", "browser"],
-          "enumDescriptions": ["Output 面板（文本框线表格）", "Webview（OJ 自带状态页面）", "外部浏览器打开"],
+          "enum": [
+            "output",
+            "webview",
+            "browser"
+          ],
+          "enumDescriptions": [
+            "Output 面板（文本框线表格）",
+            "Webview（OJ 自带状态页面）",
+            "外部浏览器打开"
+          ],
           "description": "提交状态查看模式"
         }
       }
