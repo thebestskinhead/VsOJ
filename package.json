@@ -66,6 +66,13 @@
           "type": "number",
           "default": 5000,
           "description": "状态面板自动刷新间隔（毫秒）"
+        },
+        "oj.statusViewMode": {
+          "type": "string",
+          "default": "browser",
+          "enum": ["output", "webview", "browser"],
+          "enumDescriptions": ["Output 面板（文本框线表格）", "Webview（OJ 自带状态页面）", "外部浏览器打开"],
+          "description": "提交状态查看模式"
         }
       }
     },

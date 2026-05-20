@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { ContestService } from '../api/contest';
 import { StateManager } from '../utils/state';
-import { Contest } from '../types';
+import { Contest, Pagination } from '../types';
 import { getBaseUrl } from '../utils/config';
 
 /** 比赛列表 TreeDataProvider — 复用 home.js 比赛显示逻辑 */
@@ -16,6 +16,8 @@ export class ContestTreeProvider implements vscode.TreeDataProvider<ContestTreeI
   private isLoading: boolean = false;
   private searchKeyword: string = '';
   private ready: boolean = false; // restoreSession 完成后才允许加载
+  private currentPage: number = 1; // 当前页码（非搜索模式使用，无需持久化）
+  private pagination: Pagination | null = null;
 
   constructor(contestService: ContestService, state: StateManager) {
     this.contestService = contestService;
@@ -35,13 +37,42 @@ export class ContestTreeProvider implements vscode.TreeDataProvider<ContestTreeI
   /** 搜索比赛 */
   async search(keyword: string): Promise<void> {
     this.searchKeyword = keyword;
+    this.currentPage = 1; // 搜索时重置页码
     this.refresh();
   }
 
   /** 清除搜索 */
   clearSearch(): void {
     this.searchKeyword = '';
+    this.currentPage = 1; // 清除搜索时重置页码
     this.refresh();
+  }
+
+  /** 上一页 */
+  prevPage(): void {
+    if (this.isLoading) { return; } // 互斥锁：上一个请求未完成时忽略
+    if (this.currentPage > 1) {
+      this.currentPage--;
+      this.refresh();
+    }
+  }
+
+  /** 下一页 */
+  nextPage(): void {
+    if (this.isLoading) { return; } // 互斥锁：上一个请求未完成时忽略
+    if (this.pagination && this.currentPage < this.pagination.total) {
+      this.currentPage++;
+      this.refresh();
+    }
+  }
+
+  /** 跳转到指定页 */
+  jumpToPage(page: number): void {
+    if (this.isLoading) { return; } // 互斥锁：上一个请求未完成时忽略
+    if (page >= 1) {
+      this.currentPage = page;
+      this.refresh();
+    }
   }
 
   async getChildren(element?: ContestTreeItem): Promise<ContestTreeItem[]> {
@@ -67,8 +98,13 @@ export class ContestTreeProvider implements vscode.TreeDataProvider<ContestTreeI
 
     try {
       this.isLoading = true;
-      const { rows } = await this.contestService.fetchList(1, this.searchKeyword || undefined);
+      const { rows, pagination } = await this.contestService.fetchList(this.currentPage, this.searchKeyword || undefined);
       this.contests = rows;
+      this.pagination = pagination;
+      // 用服务器返回的实际页码同步（防止请求超出范围时不一致）
+      if (pagination && pagination.current) {
+        this.currentPage = pagination.current;
+      }
 
       const favorites = this.state.getFavorites();
       const favSet = new Set(favorites);
@@ -96,17 +132,69 @@ export class ContestTreeProvider implements vscode.TreeDataProvider<ContestTreeI
 
       const items: ContestTreeItem[] = [];
 
-      // 搜索时显示结果数量
+      // 搜索模式 — 顶部添加"返回首页"，然后显示搜索结果
       if (headerLabel) {
+        const homeItem = new ContestTreeItem(
+          '← 返回首页',
+          'nav-home',
+          vscode.TreeItemCollapsibleState.None,
+        );
+        homeItem.command = { command: 'oj.refreshContests', title: '返回首页' };
+        items.push(homeItem);
         items.push(new ContestTreeItem(headerLabel, 'search-header', vscode.TreeItemCollapsibleState.None));
+      } else {
+        // 非搜索模式 — 首页显示当前页码
+        const totalPages = this.pagination ? this.pagination.total : 1;
+        items.push(new ContestTreeItem(
+          `第 ${this.currentPage} 页，共 ${totalPages} 页`,
+          'page-info',
+          vscode.TreeItemCollapsibleState.None,
+        ));
       }
 
+      // 比赛列表
       items.push(...this.contests.map(c => new ContestTreeItem(
         `${c.isFavorite ? '★ ' : ''}${c.title}`,
         'contest',
         vscode.TreeItemCollapsibleState.None,
         c,
       )));
+
+      // 非搜索模式 — 底部显示翻页导航
+      if (!this.searchKeyword) {
+        // 上一页
+        const hasPrev = this.currentPage > 1;
+        const prevItem = new ContestTreeItem(
+          hasPrev ? '← 上一页' : '← 已是第一页',
+          hasPrev ? 'nav-prev' : 'nav-prev-disabled',
+          vscode.TreeItemCollapsibleState.None,
+        );
+        if (hasPrev) {
+          prevItem.command = { command: 'oj.prevContestPage', title: '上一页' };
+        }
+        items.push(prevItem);
+
+        // 下一页
+        const hasNext = this.pagination && this.currentPage < this.pagination.total;
+        const nextItem = new ContestTreeItem(
+          hasNext ? '下一页 →' : '→ 已是最后一页',
+          hasNext ? 'nav-next' : 'nav-next-disabled',
+          vscode.TreeItemCollapsibleState.None,
+        );
+        if (hasNext) {
+          nextItem.command = { command: 'oj.nextContestPage', title: '下一页' };
+        }
+        items.push(nextItem);
+
+        // 跳转到指定页
+        const jumpItem = new ContestTreeItem(
+          '跳转到指定页...',
+          'nav-jump',
+          vscode.TreeItemCollapsibleState.None,
+        );
+        jumpItem.command = { command: 'oj.jumpContestPage', title: '跳转页码' };
+        items.push(jumpItem);
+      }
 
       return items;
     } catch (e: any) {
@@ -175,6 +263,27 @@ export class ContestTreeItem extends vscode.TreeItem {
       this.iconPath = new vscode.ThemeIcon('search');
       this.contextValue = '';
       this.description = '';
+    } else if (itemType === 'page-info') {
+      this.iconPath = new vscode.ThemeIcon('list-flat');
+      this.contextValue = '';
+    } else if (itemType === 'nav-home') {
+      this.iconPath = new vscode.ThemeIcon('home');
+      this.contextValue = '';
+    } else if (itemType === 'nav-prev') {
+      this.iconPath = new vscode.ThemeIcon('arrow-left');
+      this.contextValue = '';
+    } else if (itemType === 'nav-prev-disabled') {
+      this.iconPath = new vscode.ThemeIcon('circle-slash');
+      this.contextValue = '';
+    } else if (itemType === 'nav-next') {
+      this.iconPath = new vscode.ThemeIcon('arrow-right');
+      this.contextValue = '';
+    } else if (itemType === 'nav-next-disabled') {
+      this.iconPath = new vscode.ThemeIcon('circle-slash');
+      this.contextValue = '';
+    } else if (itemType === 'nav-jump') {
+      this.iconPath = new vscode.ThemeIcon('go-to-file');
+      this.contextValue = '';
     }
   }
 }

@@ -21,7 +21,6 @@ export class ContestService {
         const csrf = await this.auth.fetchCsrfToken();
         const formData = new URLSearchParams();
         formData.append('keyword', keyword);
-        formData.append('page', String(page));
         formData.append('csrf', csrf);
 
         response = await apiClient.post('/contest.php', formData.toString(), {

@@ -6,7 +6,7 @@ import { ContestService } from './api/contest';
 import { ProblemService } from './api/problem';
 import { SubmitService } from './api/submit';
 import { StateManager } from './utils/state';
-import { getBaseUrl } from './utils/config';
+import { getBaseUrl, getStatusViewMode } from './utils/config';
 import { ContestTreeProvider } from './views/contestTree';
 import { ProblemTreeProvider } from './views/problemTree';
 import { StatusPanel } from './views/statusPanel';
@@ -152,6 +152,43 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     })
   );
 
+  // oj.prevContestPage — 翻到上一页
+  context.subscriptions.push(
+    vscode.commands.registerCommand('oj.prevContestPage', () => {
+      contestTreeProvider.prevPage();
+    })
+  );
+
+  // oj.nextContestPage — 翻到下一页
+  context.subscriptions.push(
+    vscode.commands.registerCommand('oj.nextContestPage', () => {
+      contestTreeProvider.nextPage();
+    })
+  );
+
+  // oj.jumpContestPage — 跳转到指定页
+  context.subscriptions.push(
+    vscode.commands.registerCommand('oj.jumpContestPage', async () => {
+      const pageStr = await vscode.window.showInputBox({
+        prompt: '输入要跳转的页码',
+        placeHolder: '输入页码（数字）',
+        validateInput: (value: string) => {
+          if (!value || !/^\d+$/.test(value)) {
+            return '请输入有效的数字页码';
+          }
+          const page = parseInt(value, 10);
+          if (page < 1) {
+            return '页码必须大于 0';
+          }
+          return null;
+        },
+      });
+      if (pageStr === undefined) { return; } // 用户取消
+      const page = parseInt(pageStr, 10);
+      contestTreeProvider.jumpToPage(page);
+    })
+  );
+
   // oj.enterContest
   context.subscriptions.push(
     vscode.commands.registerCommand('oj.enterContest', async (cid: string) => {
@@ -269,9 +306,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         // pid 数字转字母（0→A, 1→B, ...）
         const pidLetter = numToLetter(parseInt(pid, 10));
         const onSubmitSuccess = () => {
-          // 提交成功后延迟启动刷新——只显示该题，结果出来后自动停
+          // 提交成功后延迟启动刷新
           setTimeout(() => {
-            statusPanel.startSubmitAutoRefresh(pidLetter);
+            const mode = getStatusViewMode();
+            if (mode === 'browser') {
+              openStatusInBrowser(state);
+            } else if (mode === 'webview') {
+              statusPanel.startSubmitWebviewRefresh();
+            } else {
+              statusPanel.startSubmitAutoRefresh(pidLetter);
+            }
           }, 4000);
         };
 
@@ -302,7 +346,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           vscode.window.showErrorMessage('请先进入比赛');
           return;
         }
-        await statusPanel.show();
+        const mode = getStatusViewMode();
+        if (mode === 'browser') {
+          await openStatusInBrowser(state);
+        } else if (mode === 'webview') {
+          await statusPanel.showWebview();
+        } else {
+          await statusPanel.show();
+        }
       } catch (e: any) {
         vscode.window.showErrorMessage(`加载状态失败: ${e.message}`);
       }
@@ -448,6 +499,23 @@ function numToLetter(n: number): string {
   let s = '', num = n;
   do { s = String.fromCharCode(65 + (num % 26)) + s; num = Math.floor(num / 26) - 1; } while (num >= 0);
   return s;
+}
+
+/** 浏览器模式：构建 status 页面 URL 并用外部浏览器打开 */
+async function openStatusInBrowser(state: StateManager): Promise<void> {
+  const baseUrl = getBaseUrl();
+  const cid = state.getCurrentCid() || '';
+  const userId = state.getStudentId() || '';
+  const pid = state.getCurrentPid();
+
+  const params = new URLSearchParams();
+  if (userId) { params.set('user_id', userId); }
+  if (cid) { params.set('cid', cid); }
+  if (pid) { params.set('problem_id', String.fromCharCode(65 + parseInt(pid, 10))); }
+
+  const query = params.toString();
+  const url = query ? `${baseUrl}/status.php?${query}` : `${baseUrl}/status.php`;
+  await vscode.commands.executeCommand('vscode.open', vscode.Uri.parse(url));
 }
 
 /** 插件停用 */

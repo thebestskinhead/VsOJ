@@ -22,3 +22,7 @@ export function getAutoRefreshStatus(): boolean {
 export function getStatusRefreshInterval(): number {
   return getConfig().get<number>('statusRefreshInterval', 5000);
 }
+
+export function getStatusViewMode(): 'output' | 'webview' | 'browser' {
+  return getConfig().get<'output' | 'webview' | 'browser'>('statusViewMode', 'webview');
+}
