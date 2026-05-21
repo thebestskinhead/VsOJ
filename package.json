@@ -81,6 +81,16 @@
             "外部浏览器打开"
           ],
           "description": "提交状态查看模式"
+        },
+        "oj.mcp.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "是否在插件启动时自动启动 MCP 服务器（供 AI Agent 调用）"
+        },
+        "oj.mcp.port": {
+          "type": "number",
+          "default": 9527,
+          "description": "MCP 服务器监听端口"
         }
       }
     },
@@ -174,6 +184,26 @@
         "command": "oj.accountSettings",
         "title": "OJ: 账号设置",
         "icon": "$(account)"
+      },
+      {
+        "command": "oj.mcp.start",
+        "title": "OJ: 启动 MCP 服务器",
+        "icon": "$(debug-start)"
+      },
+      {
+        "command": "oj.mcp.stop",
+        "title": "OJ: 停止 MCP 服务器",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "oj.mcp.showLog",
+        "title": "OJ: 显示 MCP 日志",
+        "icon": "$(output)"
+      },
+      {
+        "command": "oj.mcp.clearLog",
+        "title": "OJ: 清空 MCP 日志",
+        "icon": "$(clear-all)"
       }
     ],
     "keybindings": [

@@ -26,3 +26,11 @@ export function getStatusRefreshInterval(): number {
 export function getStatusViewMode(): 'output' | 'webview' | 'browser' {
   return getConfig().get<'output' | 'webview' | 'browser'>('statusViewMode', 'browser');
 }
+
+export function getMcpEnabled(): boolean {
+  return getConfig().get<boolean>('mcp.enabled', false);
+}
+
+export function getMcpPort(): number {
+  return getConfig().get<number>('mcp.port', 9527);
+}

@@ -6,7 +6,7 @@ import { ContestService } from './api/contest';
 import { ProblemService } from './api/problem';
 import { SubmitService } from './api/submit';
 import { StateManager } from './utils/state';
-import { getBaseUrl, getStatusViewMode } from './utils/config';
+import { getBaseUrl, getStatusViewMode, getMcpEnabled, getMcpPort } from './utils/config';
 import { ContestTreeProvider } from './views/contestTree';
 import { ProblemTreeProvider } from './views/problemTree';
 import { StatusPanel } from './views/statusPanel';
@@ -16,6 +16,9 @@ import { SubmitWebview } from './webview/submitWebview';
 import { ProblemWebview } from './webview/problemWebview';
 import { LANGUAGE_EXT } from './types';
 import { initDebugChannel, showDebugChannel, clearDebugChannel, setDebugEnabled, isDebugEnabled, logInfo } from './utils/debug';
+import { McpServer } from './mcp/server';
+import { McpToolHandler } from './mcp/tools';
+import { initMcpChannel, showMcpChannel, disposeMcpChannel, clearMcpChannel } from './mcp/logger';
 
 /** 插件激活入口 */
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -56,6 +59,43 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // 初始化 Debug 频道
   initDebugChannel();
   logInfo(`OJ 插件启动 — BaseURL: ${getBaseUrl()}`);
+
+  // 初始化 MCP 日志频道
+  initMcpChannel();
+
+  // ==========================================
+  // MCP 服务器
+  // ==========================================
+  const mcpToolHandler = new McpToolHandler(contestService, problemService, state);
+
+  // 状态栏按钮
+  const mcpStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+  mcpStatusBar.command = 'oj.mcp.start';
+  mcpStatusBar.text = '$(debug-start) MCP 已停止';
+  mcpStatusBar.tooltip = 'MCP 服务器未启动 — 点击启动';
+  mcpStatusBar.show();
+  context.subscriptions.push(mcpStatusBar);
+
+  const mcpServer = new McpServer(
+    mcpToolHandler,
+    getMcpPort(),
+    (running: boolean, port: number) => {
+      if (running) {
+        mcpStatusBar.text = `$(radio-tower) MCP :${port}`;
+        mcpStatusBar.tooltip = `MCP 服务器运行中 → http://127.0.0.1:${port}/mcp — 点击停止`;
+        mcpStatusBar.command = 'oj.mcp.stop';
+      } else {
+        mcpStatusBar.text = '$(debug-start) MCP 已停止';
+        mcpStatusBar.tooltip = 'MCP 服务器未启动 — 点击启动';
+        mcpStatusBar.command = 'oj.mcp.start';
+      }
+    },
+  );
+
+  // 将 mcpServer 添加到清理列表
+  context.subscriptions.push({
+    dispose: () => { mcpServer.stop().catch(() => {}); },
+  });
 
   // 视图 Providers
   const contestTreeProvider = new ContestTreeProvider(contestService, state);
@@ -445,6 +485,54 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     })
   );
 
+  // oj.mcp.start — 启动 MCP 服务器
+  context.subscriptions.push(
+    vscode.commands.registerCommand('oj.mcp.start', async () => {
+      if (mcpServer.running) {
+        vscode.window.showInformationMessage(`[OJ-MCP] 服务器已在运行 → http://127.0.0.1:${mcpServer.currentPort}/mcp`);
+        return;
+      }
+      try {
+        const port = getMcpPort();
+        await mcpServer.start(port);
+        vscode.window.showInformationMessage(`[OJ-MCP] MCP 服务器已启动 → http://127.0.0.1:${port}/mcp`);
+      } catch (e: any) {
+        vscode.window.showErrorMessage(`[OJ-MCP] 启动失败: ${e.message}`);
+      }
+    })
+  );
+
+  // oj.mcp.stop — 停止 MCP 服务器
+  context.subscriptions.push(
+    vscode.commands.registerCommand('oj.mcp.stop', async () => {
+      if (!mcpServer.running) {
+        vscode.window.showInformationMessage('[OJ-MCP] 服务器未在运行');
+        return;
+      }
+      try {
+        await mcpServer.stop();
+        vscode.window.showInformationMessage('[OJ-MCP] MCP 服务器已停止');
+      } catch (e: any) {
+        vscode.window.showErrorMessage(`[OJ-MCP] 停止失败: ${e.message}`);
+      }
+    })
+  );
+
+  // oj.mcp.showLog — 显示 MCP 日志
+  context.subscriptions.push(
+    vscode.commands.registerCommand('oj.mcp.showLog', () => {
+      showMcpChannel();
+    })
+  );
+
+  // oj.mcp.clearLog — 清空 MCP 日志
+  context.subscriptions.push(
+    vscode.commands.registerCommand('oj.mcp.clearLog', () => {
+      clearMcpChannel();
+      vscode.window.showInformationMessage('[OJ-MCP] 日志已清空');
+    })
+  );
+
   // ==========================================
   // 启动时恢复登录态
   // ==========================================
@@ -482,12 +570,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // 恢复完成后才允许 TreeView 加载数据，避免启动竞态
   contestTreeProvider.setReady();
 
+  // MCP 自动启动（如果设置中启用了）
+  if (getMcpEnabled()) {
+    try {
+      const port = getMcpPort();
+      await mcpServer.start(port);
+      logInfo(`MCP 服务器已自动启动 → http://127.0.0.1:${port}/mcp`);
+    } catch (e: any) {
+      console.error('[OJ-MCP] 自动启动失败:', e.message);
+    }
+  }
+
   // 注册所有 disposable
   context.subscriptions.push(
     contestTree,
     problemTree,
     { dispose: () => problemWebview.dispose() },
     { dispose: () => statusPanel.dispose() },
+    { dispose: () => { disposeMcpChannel(); } },
   );
 
   console.log('[OJ] 插件激活完成');
@@ -520,5 +620,6 @@ async function openStatusInBrowser(state: StateManager): Promise<void> {
 
 /** 插件停用 */
 export function deactivate(): void {
+  disposeMcpChannel();
   console.log('[OJ] 插件已停用');
 }
