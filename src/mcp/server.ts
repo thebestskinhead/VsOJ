@@ -19,7 +19,7 @@ import {
 
 interface JsonRpcRequest {
   jsonrpc: '2.0';
-  id: number | string;
+  id?: number | string | null;  // 通知没有 id
   method: string;
   params?: Record<string, any>;
 }
@@ -159,11 +159,20 @@ export class McpServer {
       res.setHeader('Content-Type', 'application/json');
 
       try {
-        const request: JsonRpcRequest = JSON.parse(body);
+        const request = JSON.parse(body) as JsonRpcRequest;
 
         if (request.jsonrpc !== '2.0') {
           logMcpParseError('非 JSON-RPC 2.0 请求');
           throw new Error('仅支持 JSON-RPC 2.0');
+        }
+
+        // 通知（无 id）→ 不返回响应体
+        if (request.id === undefined || request.id === null) {
+          await this.handleNotification(request);
+          logMcpHttp('POST', req.url || '/mcp', 202);
+          res.writeHead(202);
+          res.end();
+          return;
         }
 
         const response = await this.dispatchRequest(request);
@@ -183,6 +192,24 @@ export class McpServer {
         }));
       }
     });
+  }
+
+  /** 处理通知（无 id 的 JSON-RPC 消息） */
+  private async handleNotification(request: JsonRpcRequest): Promise<void> {
+    const { method, params } = request;
+
+    switch (method) {
+      case 'notifications/initialized':
+        logMcpInfo('客户端初始化完成');
+        break;
+
+      case 'notifications/cancelled':
+        logMcpInfo(`工具调用被取消: ${params?.requestId || '?'}`);
+        break;
+
+      default:
+        logMcpInfo(`收到通知: ${method}`);
+    }
   }
 
   /** 分发 JSON-RPC 请求 */
@@ -207,6 +234,14 @@ export class McpServer {
           result = await this.handleToolsCall(params);
           break;
 
+        case 'prompts/list':
+          result = { prompts: [] };
+          break;
+
+        case 'resources/list':
+          result = { resources: [] };
+          break;
+
         case 'ping':
           logMcpInfo('收到 ping');
           result = { pong: true };
@@ -216,7 +251,7 @@ export class McpServer {
           logMcpMethodNotFound(method);
           return {
             jsonrpc: '2.0',
-            id,
+            id: id!,
             error: {
               code: -32601,
               message: `Method not found: ${method}`,
@@ -224,12 +259,12 @@ export class McpServer {
           };
       }
 
-      return { jsonrpc: '2.0', id, result };
+      return { jsonrpc: '2.0', id: id!, result };
     } catch (e: any) {
       logMcpToolError(method, e.message);
       return {
         jsonrpc: '2.0',
-        id,
+        id: id!,
         error: {
           code: -32603,
           message: `Internal error: ${e.message}`,
