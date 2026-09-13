@@ -100,20 +100,22 @@ OJ 的题目页 `problem.php` 对**公开比赛**不校验登录，所以登录�
 
 缓存写入工作区的 `oj.workspace.root` 目录（默认 `.vsoj/`），可被外部工具与 AI 直接读取：
 
+缓存**只存原始信息**：题面 HTML、图片二进制、样例文本。结构化数据（题目详情、题目列表、
+提交状态）由解析层按需产出，**不落盘**，避免解析口径变更后留下脏数据。
+
 ```
 .vsoj/
-├── contests/list-p<页码>[-kw<关键词>].json   比赛列表缓存（按页/关键词分片）
+├── contests/list-p<页码>[-kw<关键词>].html   比赛列表原始 HTML
 └── contests/<cid>-<比赛标题>/
-    ├── meta.json                       比赛元信息
-    ├── problems.json                   题目列表
-    ├── status.json                     提交状态缓存
-    ├── assets/                         比赛级资源（题面图片等）
+    ├── meta.json                        比赛元信息（唯一的非站点文件）
+    ├── raw/contest.html                 比赛页原始 HTML
+    ├── raw/status.html                  提交状态原始 HTML
     └── problems/<pid>/
-        ├── problem.json                结构化题目详情
-        ├── problem.md                  题面 Markdown（便于 AI 阅读）
-        ├── code/                       用户代码 / 编译产物
-        ├── samples/1.in, 1.out ...     样例数据集
-        └── test/result.json            本地测试结果
+        ├── raw/page.html                题目页原始 HTML（题面的唯一来源）
+        ├── assets/<hash>-<文件名>.<ext>  题面图片二进制
+        ├── samples/1.in, 1.out          样例数据集
+        ├── code/                        用户代码 / 编译产物
+        └── test/result.json, report.md  本地测试结果（S6 产出）
 ```
 
 - 可安全删除，插件会自动重建
