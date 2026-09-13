@@ -89,6 +89,39 @@ axios 会自动跟随重定向 —— 而**提交成功后站点同样 302 到 `
 
 ---
 
+## 比赛目录初始化：现状与缺口（S5 前置评审）
+
+> 本节用于澄清「比赛目录初始化」到底落到什么程度，避免把「路径布局已定稿」
+> 误当成「初始化已实现」。
+
+**已落地（属于 S1，不是 S5）**
+
+- `src/cache/paths.ts` 是路径的**唯一来源**，布局已定稿并被 29 项断言锁定。
+- `CacheStore.ensureContestDir(cid, title)`：建 `<cid>-<slug>` 目录、写 `meta.json`、
+  建 `assets/`、登记索引；幂等，且目录名一旦定稿不再变化。
+- 领域写入口：`writeProblemList` / `writeProblem` / `writeSample` / `writeStatus`
+  —— 这些是**被动的按需写盘**，谁调用谁触发。
+
+**未落地（S5 本体的工作）**
+
+- 没有任何 `src/workspace/initializer.ts`；
+- 没有任何「进入比赛即自动初始化」的触发点（`contestTree` / `problemTree` 走的是
+  原有网络路径，S4 未做，所以缓存目前基本是空转）；
+- 样例数据集**不会自动落盘**，`writeSample` 至今无调用方。
+
+**已识别的三个缺口（S5 / S6 必须一并解决）**
+
+| 缺口 | 现状 | 影响 |
+|---|---|---|
+| **多样例缺失** | 布局支持 `1.in/2.in/...`，但 `ProblemDetail` 只有单个 `sampleInput`/`sampleOutput`，`parser.ts` 只取 `#sampleinput` / `#sampleoutput` 两个 id | 若站点一道题含多组样例，本地测试只能跑第一组 |
+| **图片未落盘** | `api/problem.ts` 把 `<img>` 抓成 base64 **内联进 HTML**，`ProblemDetail` 没有任何图片字段 | MCP 拿不到图片的本地路径，`assets/` 目录形同虚设 |
+| **`test/` 目录未纳入 `ContestPaths`** | `CachePaths.resultJson/reportMd` 是静态方法，调用方需自行拼 `problemDir(pid)` | 与「路径只在 paths.ts 拼接」的约定出现缝隙，S6 前应把 `testDir/testResult/testReport` 收进 `ContestPaths` |
+
+**结论**：目录布局对缓存自身够用（题目/状态/列表都有落点），但**对 MCP 与本地测试不够用**
+—— 缺多样例、缺图片资产、缺 `test/` 出口。这三项是 S5/S6 的必做项，不是可选优化。
+
+---
+
 ## 待办（后续阶段）
 
 优先级与依赖见 `docs/ARCHITECTURE.md` §4。当前第一优先：
