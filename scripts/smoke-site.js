@@ -47,7 +47,19 @@ const ok = (label, cond) => check(label, !!cond, true);
   const workspace = path.join(os.tmpdir(), `vsoj-smoke-ws-${process.pid}`);
   const globalStorage = path.join(os.tmpdir(), `vsoj-smoke-gs-${process.pid}`);
   const env = installVscodeStub(
-    { 'workspace.root': '.vsoj', 'cache.enabled': true, 'cache.offline': false, 'cache.ttlSeconds': 180, 'cache.staleSeconds': 900 },
+    {
+      // baseUrl 必须在这里给：apiClient 是模块级单例，构造时就会读它
+      baseUrl: BASE,
+      'workspace.root': '.vsoj',
+      'cache.enabled': true,
+      'cache.offline': false,
+      'cache.ttlSeconds': 180,
+      'cache.staleSeconds': 900,
+      'project.enabled': true,
+      'project.lazyInit': true,
+      'project.sourceFileName': 'main.cpp',
+      'project.initEntryVisible': true,
+    },
     { workspaceFolder: workspace, globalStorage },
   );
 
@@ -208,8 +220,146 @@ const ok = (label, cond) => check(label, !!cond, true);
   check('离线时零网络（已缓存的图仍内联）', off.inlined, localized.inlined);
   ok('离线时题目页可读', (await store.readProblemHtml(CID, pid, { allowStale: true })) !== undefined);
 
-  // ---------- 6. 清理语义 ----------
-  console.log('\n[6] 清理缓存：删站点数据 + temp/，保留 main.cpp / test/ / meta');
+  // ==========================================================
+  // S5：比赛项目初始化（走真实的 initializer + buildInitDeps）
+  // ==========================================================
+  const { ProblemInitializer, CPP_SKELETON } = require('../out/workspace/initializer.js');
+  const { buildInitDeps } = require('../out/workspace/wiring.js');
+  const { ProblemService } = require('../out/api/problem.js');
+  const { apiClient } = require('../out/api/client.js');
+
+  const problemService = new ProblemService();
+  /** 「拉图 → 落盘」的真实接线：与扩展里 oj.showProblem 走的是同一条路 */
+  const makeInit = () => new ProblemInitializer(buildInitDeps({
+    cid: CID,
+    store,
+    problems: problemService,
+    fetchAsset: (url) => apiClient.getBuffer(url, 'smoke.asset'),
+    toError: (e) => (e && e.message) || String(e),
+  }));
+
+  const pid2 = (probList.problems[1] || probList.problems[0]).pid;
+  const brief2 = probList.problems.find(p => p.pid === pid2) || probList.problems[0];
+
+  // ---------- 6. 懒初始化单题 ----------
+  console.log(`\n[6] 懒初始化单题 pid=${pid2}（真实 initializer）`);
+  {
+    const cpBefore = await store.resolveContestDir(CID);
+    const nBefore = (await store.readContestMeta(CID)).problems.length;
+
+    const r = await makeInit().ensureProblem({
+      pid: pid2, globalId: brief2.globalId, title: brief2.title,
+    });
+    check('ok', r.ok, true);
+    check('本次联网拉取了题面', r.fetched, true);
+    check('新建了源文件', r.createdSource, true);
+    check('落盘样例组数', r.samples, 1);
+
+    const cpAfter = await store.resolveContestDir(CID);
+    const dirBase = path.basename(cpAfter.problemDir(pid2));
+    console.log(`    题目目录: ${dirBase}`);
+    ok('源文件已落盘', fs.existsSync(cpAfter.mainSource(pid2)));
+    ok('题面原始 HTML 已落盘', fs.existsSync(cpAfter.problemHtml(pid2)));
+    ok('temp/ 已建立', fs.existsSync(cpAfter.tempDir(pid2)));
+    ok('test/ 已建立', fs.existsSync(cpAfter.testDir(pid2)));
+    check('源文件内容为最小 C++ 骨架（C14）',
+      fs.readFileSync(cpAfter.mainSource(pid2), 'utf8'), CPP_SKELETON);
+    check('meta.problems 增加了一条', (await store.readContestMeta(CID)).problems.length, nBefore + 1);
+    check('题目目录名以题号字母开头',
+      dirBase.startsWith(numToLetter(parseInt(pid2, 10)) + '-'), true);
+
+    // 幂等：再跑一次必须全部命中本地、且不覆盖已存在文件（C6）
+    fs.writeFileSync(cpAfter.mainSource(pid2), '// 用户已经写的代码');
+    const again = await makeInit().ensureProblem(pid2);
+    check('第二次 ok', again.ok, true);
+    check('第二次不再联网', again.fetched, false);
+    check('第二次未重建源文件', again.createdSource, false);
+    ok('第二次跳过题面', again.skipped.includes('题面（已有缓存）'));
+    ok('第二次跳过源文件', again.skipped.some(s => s.includes('不覆盖')));
+    check('用户代码未被覆盖（C6）',
+      fs.readFileSync(cpAfter.mainSource(pid2), 'utf8'), '// 用户已经写的代码');
+  }
+
+  // ---------- 7. 全量初始化整个比赛 ----------
+  console.log(`\n[7] 全量初始化 cid=${CID}（${probList.problems.length} 道题）`);
+  {
+    const hints = probList.problems.map(p => ({ pid: p.pid, globalId: p.globalId, title: p.title }));
+    const progress = [];
+    const summary = await makeInit().initializeContest(hints, {
+      onProgress: p => progress.push(`${p.index}/${p.total}`),
+    });
+    console.log(`    完成 ${summary.ok}/${summary.total} ｜ 失败 ${summary.failed.length} ｜ 新建源文件 ${summary.createdSources}`);
+    check('全部成功', summary.failed, []);
+    check('完成数 = 题目数', summary.ok, probList.problems.length);
+    check('未取消', summary.cancelled, false);
+    check('进度回调次数 = 题目数', progress.length, probList.problems.length);
+    check('进度按序递增', progress[0], `1/${probList.problems.length}`);
+
+    const cpAll = await store.resolveContestDir(CID);
+    const missing = hints.filter(h => !fs.existsSync(cpAll.mainSource(h.pid)));
+    check('每道题都有源文件', missing.map(h => h.pid), []);
+    const meta = await store.readContestMeta(CID);
+    check('meta 登记题数 = 题目数', meta.problems.length, probList.problems.length);
+    const badDirs = meta.problems.filter(
+      p => !path.basename(cpAll.problemDir(p.pid)).startsWith(numToLetter(parseInt(p.pid, 10)) + '-'),
+    );
+    check('所有题目目录名都由题号字母推导', badDirs.map(p => p.pid), []);
+
+    // 题面 / 样例在初始化后应可离线读取（C15）
+    const pid3 = (probList.problems[2] || probList.problems[0]).pid;
+    ok('离线可读题面', (await store.readProblemHtml(CID, pid3, { allowStale: true })) !== undefined);
+    check('离线可读样例组数', (await store.readSamples(CID, pid3)).length, 1);
+  }
+
+  // ---------- 8. 离线重进（断网后不再发起请求） ----------
+  console.log('\n[8] 离线模式：已初始化的题照常可用，未缓存的题如实报错');
+  {
+    env.config['cache.offline'] = true;
+    try {
+      const r = await makeInit().ensureProblem(pid2);
+      check('已有缓存的题 ok', r.ok, true);
+      check('离线不发请求', r.fetched, false);
+
+      // 该 pid 必然不在本地（站点上也不存在，但离线时根本不会去问）
+      const miss = await makeInit().ensureProblem('9999');
+      check('无缓存的题 ok=false', miss.ok, false);
+      check('给出可读原因', miss.error, '离线且无本地缓存');
+
+      const cpOff = await store.resolveContestDir(CID);
+      ok('离线仍能定位比赛目录', !!cpOff);
+      ok('离线仍能读题面', (await store.readProblemHtml(CID, pid2, { allowStale: true })) !== undefined);
+    } finally {
+      env.config['cache.offline'] = false;
+    }
+  }
+
+  // ---------- 9. 初始化后的完整目录结构 ----------
+  const dumpTree = (root, title) => {
+    console.log(`\n${title}`);
+    const tree = [];
+    const walk = (dir, prefix = '') => {
+      let entries = [];
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      entries.sort((a, b) => a.name.localeCompare(b.name));
+      entries.forEach((e, i) => {
+        const last = i === entries.length - 1;
+        tree.push(`${prefix}${last ? '└── ' : '├── '}${e.name}${e.isDirectory() ? '/' : ''}`);
+        if (e.isDirectory()) { walk(path.join(dir, e.name), `${prefix}${last ? '    ' : '│   '}`); }
+      });
+    };
+    walk(root);
+    console.log(tree.map(l => `    ${l}`).join('\n'));
+  };
+  dumpTree(layout.projectRoot, '[9] 初始化后的目录结构（工作区根视角）');
+
+  // 布局契约：比赛项目文件夹必须是**可见**的（不在 .vsoj 里）
+  const visible = fs.readdirSync(layout.projectRoot).filter(n => !n.startsWith('.'));
+  console.log(`\n    可见的比赛项目文件夹: ${JSON.stringify(visible)}`);
+  ok('比赛项目文件夹建在工作区根下（可见）', visible.length >= 2);
+  ok('内部数据根隐藏在工作区根下', fs.existsSync(path.join(layout.projectRoot, '.vsoj')));
+
+  // ---------- 10. 清理语义 ----------
+  console.log('\n[10] 清理缓存：删站点数据 + temp/，保留 main.cpp / test/ / meta');
   await store.ensureDir(cp2.tempDir(pid));
   await store.ensureDir(cp2.testDir(pid));
   await store.writeUserFile(cp2.mainSource(pid), 'int main(){}');
@@ -223,41 +373,25 @@ const ok = (label, cond) => check(label, !!cond, true);
   ok('题目 raw/ 已删除', !fs.existsSync(cp2.problemRawDir(pid)));
   ok('样例已删除', !fs.existsSync(cp2.samplesDir(pid)));
   ok('temp/ 已删除', !fs.existsSync(cp2.tempDir(pid)));
-  ok('main.cpp 保留', fs.existsSync(cp2.mainSource(pid)));
-  ok('test/ 保留', fs.existsSync(cp2.testResult(pid)));
-  ok('meta.json 保留', fs.existsSync(cp2.meta));
   check('清理后仍能定位目录', !!(await store.resolveContestDir(CID)), true);
-  check('清理后题目目录名不变',
-    path.basename((await store.resolveContestDir(CID)).problemDir(pid)), problemDirBase);
 
-  // ---------- 7. AI 可读形态 ----------
-  console.log('\n[7] 题面 Markdown 生成（不落盘，按需生成）');
+  const cpAfterPurge = await store.resolveContestDir(CID);
+  const lostSources = probList.problems.filter(p => !fs.existsSync(cpAfterPurge.mainSource(p.pid)));
+  check('清理后所有源码都在（C12）', lostSources.map(p => p.pid), []);
+  check('清理后 test/ 保留', fs.existsSync(cp2.testResult(pid)), true);
+  check('清理后 meta.json 保留', fs.existsSync(cp2.meta), true);
+  check('清理后题目目录名不变',
+    path.basename(cpAfterPurge.problemDir(pid)), problemDirBase);
+
+  // ---------- 11. AI 可读形态 ----------
+  console.log('\n[11] 题面 Markdown 生成（不落盘，按需生成）');
   const md = problemToMarkdown(detail);
   console.log(`    Markdown 长度: ${md.length}`);
   ok('含标题', md.startsWith('# '));
   ok('含样例小节', md.includes('## 样例输入'));
 
-  // 目录树
-  console.log('\n[8] 生成的目录结构（工作区根视角）');
-  const tree = [];
-  const walk = (dir, prefix = '') => {
-    let entries = [];
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
-    entries.sort((a, b) => a.name.localeCompare(b.name));
-    entries.forEach((e, i) => {
-      const last = i === entries.length - 1;
-      tree.push(`${prefix}${last ? '└── ' : '├── '}${e.name}${e.isDirectory() ? '/' : ''}`);
-      if (e.isDirectory()) { walk(path.join(dir, e.name), `${prefix}${last ? '    ' : '│   '}`); }
-    });
-  };
-  walk(layout.projectRoot);
-  console.log(tree.map(l => `    ${l}`).join('\n'));
-
-  // 布局契约：比赛项目文件夹必须是**可见**的（不在 .vsoj 里）
-  const visible = fs.readdirSync(layout.projectRoot).filter(n => !n.startsWith('.'));
-  console.log(`\n    可见的比赛项目文件夹: ${JSON.stringify(visible)}`);
-  ok('比赛项目文件夹建在工作区根下（可见）', visible.length >= 2);
-  ok('内部数据根隐藏在工作区根下', fs.existsSync(path.join(layout.projectRoot, '.vsoj')));
+  // 清理后应只剩「用户不可再生的资产」——直接看磁盘，避免只信断言
+  dumpTree(cpAfterPurge.dir, '[12] 清理后的比赛目录（只剩源码 / test / meta）');
 
   console.log(`\n工作区（可查看）: ${layout.projectRoot}`);
   console.log(`内部数据根: ${layout.rootDir}`);
