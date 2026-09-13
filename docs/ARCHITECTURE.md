@@ -140,7 +140,7 @@ extension.ts ── 组合根：构造服务 → 注册命令 → 装配 TreeVie
 | **S1** | 缓存层骨架 | `src/cache/paths.ts`、`src/cache/store.ts`、配置项、`test/cache-layout.test.js` | ✅ |
 | **S2** | 会话保活 + 失效自愈 | `src/session/keeper.ts`、`src/session/guard.ts`、`submit` 错误分类、4 个会话命令、状态栏、`test/session.test.js` | ✅ |
 | **S3** | 静态资源层 | `media/login.html`、`media/submit.html`、`media/common.css`、`media/*.js`，webview 改为 `asWebviewUri` 加载 | 待办 |
-| **S4** | 缓存接入 views/api + 离线模式 | contestTree / problemTree / problemWebview 走缓存；`oj.cache.offline` 生效 | 待办 |
+| **S4** | 运行期缓存刷新 + 离线模式 | 详见 `docs/PLAN_S4.md`（契约 / 阶段 / 测试） | 计划中 |
 | **S5** | 进入比赛自动初始化工作区 | `src/workspace/initializer.ts`；`meta.json` / `problem.md` / `samples/` | 待办 |
 | **S6** | 本地测试引擎 + MCP 扩展 | `src/test/runner.ts`、3 个新 MCP 工具、`.vscode/tasks.json` 模板 | 待办 |
 | **S7** | 状态页静态化 | 用静态页 + 缓存数据替换 `statusPanel` 的 `proxyNavigate` 代理渲染 | 待办 |

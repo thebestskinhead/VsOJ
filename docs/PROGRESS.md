@@ -109,26 +109,35 @@ axios 会自动跟随重定向 —— 而**提交成功后站点同样 302 到 `
   原有网络路径，S4 未做，所以缓存目前基本是空转）；
 - 样例数据集**不会自动落盘**，`writeSample` 至今无调用方。
 
-**已识别的三个缺口（S5 / S6 必须一并解决）**
+**已识别的缺口（含实测修正）**
 
-| 缺口 | 现状 | 影响 |
+> 初版这里的三条结论有两条是**基于假设**写的，已用实测推翻。修正后的口径与数据见
+> `docs/PLAN_S4.md` §2。
+
+| 缺口 | 实测结论 | 影响 |
 |---|---|---|
-| **多样例缺失** | 布局支持 `1.in/2.in/...`，但 `ProblemDetail` 只有单个 `sampleInput`/`sampleOutput`，`parser.ts` 只取 `#sampleinput` / `#sampleoutput` 两个 id | 若站点一道题含多组样例，本地测试只能跑第一组 |
-| **图片未落盘** | `api/problem.ts` 把 `<img>` 抓成 base64 **内联进 HTML**，`ProblemDetail` 没有任何图片字段 | MCP 拿不到图片的本地路径，`assets/` 目录形同虚设 |
-| **`test/` 目录未纳入 `ContestPaths`** | `CachePaths.resultJson/reportMd` 是静态方法，调用方需自行拼 `problemDir(pid)` | 与「路径只在 paths.ts 拼接」的约定出现缝隙，S6 前应把 `testDir/testResult/testReport` 收进 `ContestPaths` |
+| ~~多样例缺失~~ | **不成立**。扫描 `cid=3772`/`3775` 共 40 个 pid 位置、其中 24 个是有效题目页，**24/24 均为单组样例**（`#sampleinput` / `#sampleoutput` 各一） | 无。布局保留 `1.in/2.in` 仅为前瞻，本轮**不需要**多样例解析 |
+| 图片未落盘 | **成立，但成因与初版描述不同**。题面图是相对路径 `/JudgeOnline/upload/image/…png`，现有 `inlineImages()` 正则**能正常命中**，且调用点只作用于 `description`/`inputDesc`/`outputDesc`，页脚脚本里的二维码不会被误抓（实测那 4 个 `<img>` 全在 `<script>` 内且为绝对 URL）。真正缺的是**已抓到的 Buffer 没落盘、也没有结构化字段** | MCP 拿不到图片本地路径。另：题面带图**仅约 4%**（24 道有效题中 1 道，`cid=3775&pid=16`） |
+| `test/` 目录未纳入 `ContestPaths` | 成立。`CachePaths.resultJson/reportMd` 是静态方法，调用方需自行拼 `problemDir(pid)` | 与「路径只在 `paths.ts` 拼接」的约定有缝隙，S6 前应收进 `ContestPaths` |
+| 「提示」小节被丢弃 | **新发现**。24 道有效题中有 4 道含 `<h4>提示</h4>` 小节，而 `ProblemDetail` 没有对应字段 | 题面信息丢失 |
 
-**结论**：目录布局对缓存自身够用（题目/状态/列表都有落点），但**对 MCP 与本地测试不够用**
-—— 缺多样例、缺图片资产、缺 `test/` 出口。这三项是 S5/S6 的必做项，不是可选优化。
+**结论**：目录布局对缓存自身够用（题目 / 状态 / 列表都有落点），但对**本地测试与 MCP**
+尚缺三项（样例落盘、`test/` 出口、图片资产），且都是 S6 的前置，不是可选优化。
+执行顺序与取舍见 `docs/PLAN_S4.md` §8。
 
 ---
 
 ## 待办（后续阶段）
 
-优先级与依赖见 `docs/ARCHITECTURE.md` §4。当前第一优先：
+优先级与依赖见 `docs/ARCHITECTURE.md` §4。当前执行中：
 
+- **S4 运行期缓存刷新与离线预览** —— 已细化为 `docs/PLAN_S4.md`（含 10 条已确认的行为契约、
+  S4.1–S4.6 阶段切分、测试策略）。范围：重访自动刷新、单题强制刷新、全量强制刷新、
+  题目页过期可见性。
 - **S3 静态资源层** —— 把登录/提交页从 TS 字符串外置到 `media/`，用 `asWebviewUri` 加载。
-- **S4 缓存接入 + 离线模式** —— `views/*` 先缓存后网络，`oj.cache.offline` 生效。
 - **S5 比赛目录初始化** —— 进入比赛自动建目录、写 `problem.md`、落样例数据集。
+  **与 S4 在语义上解耦**：初始化是阶段性的"建立工作区"动作，运行期刷新是"保持数据新鲜"，
+  两者不共用触发路径，S4 不引入任何"进入比赛即触发"的代码。
 - **S6 本地测试引擎 + MCP 扩展** —— 题目图片返回、样例识别、以 exe 为输入的一键本地测试，
   并支持通过 `.vscode/tasks.json` 接入编辑器流水线。
 - **S7 状态页静态化** —— 替换 `statusPanel` 中代理渲染 OJ 原生 `status.php` 的做法。
