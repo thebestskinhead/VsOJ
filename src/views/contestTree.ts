@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { ContestService } from '../api/contest';
 import { StateManager } from '../utils/state';
 import { Contest, Pagination } from '../types';
-import { getBaseUrl } from '../utils/config';
+import { getBaseUrl, isOfflineMode } from '../utils/config';
 
 /** 比赛列表 TreeDataProvider — 复用 home.js 比赛显示逻辑 */
 
@@ -18,6 +18,8 @@ export class ContestTreeProvider implements vscode.TreeDataProvider<ContestTreeI
   private ready: boolean = false; // restoreSession 完成后才允许加载
   private currentPage: number = 1; // 当前页码（非搜索模式使用，无需持久化）
   private pagination: Pagination | null = null;
+  /** 下一次加载是否绕过缓存（「刷新比赛列表」按钮用） */
+  private forceNext: boolean = false;
 
   constructor(contestService: ContestService, state: StateManager) {
     this.contestService = contestService;
@@ -30,7 +32,12 @@ export class ContestTreeProvider implements vscode.TreeDataProvider<ContestTreeI
     this.refresh();
   }
 
-  refresh(): void {
+  /**
+   * 刷新列表。
+   * @param force 忽略缓存强制联网（缓存优先策略下，普通「刷新」可能仍命中缓存）
+   */
+  refresh(force: boolean = false): void {
+    if (force) { this.forceNext = true; }
     this._onDidChangeTreeData.fire(undefined);
   }
 
@@ -42,10 +49,10 @@ export class ContestTreeProvider implements vscode.TreeDataProvider<ContestTreeI
   }
 
   /** 清除搜索 */
-  clearSearch(): void {
+  clearSearch(force: boolean = false): void {
     this.searchKeyword = '';
     this.currentPage = 1; // 清除搜索时重置页码
-    this.refresh();
+    this.refresh(force);
   }
 
   /** 上一页 */
@@ -98,7 +105,11 @@ export class ContestTreeProvider implements vscode.TreeDataProvider<ContestTreeI
 
     try {
       this.isLoading = true;
-      const { rows, pagination } = await this.contestService.fetchList(this.currentPage, this.searchKeyword || undefined);
+      const force = this.forceNext;
+      this.forceNext = false;
+      const { rows, pagination } = await this.contestService.fetchList(
+        this.currentPage, this.searchKeyword || undefined, { force },
+      );
       this.contests = rows;
       this.pagination = pagination;
       // 用服务器返回的实际页码同步（防止请求超出范围时不一致）
@@ -122,7 +133,7 @@ export class ContestTreeProvider implements vscode.TreeDataProvider<ContestTreeI
       if (this.contests.length === 0) {
         const msg = this.searchKeyword
           ? `未找到匹配"${this.searchKeyword}"的比赛`
-          : '暂无比赛数据';
+          : (isOfflineMode() ? '离线模式 · 无本地缓存的比赛列表' : '暂无比赛数据');
         return [new ContestTreeItem(msg, 'empty', vscode.TreeItemCollapsibleState.None)];
       }
 

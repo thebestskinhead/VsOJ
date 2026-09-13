@@ -2,6 +2,7 @@ import { apiClient } from './client';
 import { parseStatusTable } from '../utils/parser';
 import { StatusRecord, LANGUAGE_EXT, LANGUAGE_NAME } from '../types';
 import { AuthService } from './auth';
+import { CacheStore } from '../cache/store';
 import {
   classifyHtmlBody, classifyHttpResponse, classifyThrown, looksLikeLoginPage, FailureKind,
 } from '../session/guard';
@@ -24,11 +25,22 @@ export interface SubmitOutcome {
   rawSnippet?: string;
 }
 
+/** 状态查询结果（含数据来源，便于 UI 标注「离线缓存」） */
+export interface StatusQueryResult {
+  records: StatusRecord[];
+  /** 数据是否来自本地缓存（网络不可用 / 离线模式） */
+  fromCache: boolean;
+  /** 离线模式且本地无缓存 */
+  offlineNoCache?: boolean;
+}
+
 export class SubmitService {
   private auth: AuthService;
+  private store?: CacheStore;
 
-  constructor(auth: AuthService) {
+  constructor(auth: AuthService, store?: CacheStore) {
     this.auth = auth;
+    this.store = store;
   }
 
   /**
@@ -111,17 +123,47 @@ export class SubmitService {
     }
   }
 
-  /** 查询提交状态 — 复用 status.js loadStatusData */
-  async queryStatus(userId: string, cid: string): Promise<StatusRecord[]> {
-    try {
-      const response = await apiClient.get('/status.php', {
-        params: { user_id: userId, cid },
-        headers: { 'Cache-Control': 'no-cache' },
-      }, 'submit.queryStatus');
+  /**
+   * 拉取状态页**原始 HTML**（不走缓存）。
+   * 供刷新执行器 `cache/refresher.ts` 使用。
+   */
+  async fetchStatusHtml(userId: string, cid: string): Promise<string> {
+    const response = await apiClient.get('/status.php', {
+      params: { user_id: userId, cid },
+      headers: { 'Cache-Control': 'no-cache' },
+    }, 'submit.fetchStatusHtml');
+    return typeof response.data === 'string' ? response.data : '';
+  }
 
-      const html = typeof response.data === 'string' ? response.data : '';
-      return parseStatusTable(html);
+  /**
+   * 查询提交状态。
+   *
+   * 缓存策略：**网络优先，缓存降级**。状态数据的时效性要求高于题目内容，
+   * 所以网络可访问时一律实时请求（顺带把原始 HTML 落盘）；只有请求失败
+   * 或 `oj.cache.offline = true` 时才使用本地缓存，并通过 `fromCache` 告知上层。
+   */
+  async queryStatus(userId: string, cid: string): Promise<StatusQueryResult> {
+    const offline = this.store?.offline ?? false;
+
+    if (offline) {
+      const cached = await this.store?.readStatusHtml(cid, { allowStale: true });
+      if (cached !== undefined) {
+        return { records: parseStatusTable(cached), fromCache: true };
+      }
+      return { records: [], fromCache: true, offlineNoCache: true };
+    }
+
+    try {
+      const html = await this.fetchStatusHtml(userId, cid);
+      await this.store?.writeStatusHtml(cid, html);
+      return { records: parseStatusTable(html), fromCache: false };
     } catch (e: any) {
+      // 降级：网络不可用 → 读本地缓存（宁肯看到略旧的记录，也好过空白）
+      const cached = await this.store?.readStatusHtml(cid, { allowStale: true });
+      if (cached !== undefined) {
+        console.warn('[OJ] 状态查询失败，降级使用本地缓存:', e.message);
+        return { records: parseStatusTable(cached), fromCache: true };
+      }
       console.error('[OJ] 状态查询失败:', e);
       throw new Error(`查询状态失败: ${e.message}`);
     }

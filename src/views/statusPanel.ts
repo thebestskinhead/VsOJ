@@ -54,14 +54,15 @@ export class StatusPanel {
       const cid = this.state.getCurrentCid();
       if (!cid) { this.replace('  未进入比赛\n'); return; }
       const userId = this.state.getStudentId() || '';
-      let records = await this.submitService.queryStatus(userId, cid);
+      const res = await this.submitService.queryStatus(userId, cid);
+      let records = res.records;
 
       // 按题目过滤——只显示当前题目的提交
       if (this.filterPid) {
         records = records.filter(r => r.problemId === this.filterPid);
       }
 
-      this.render(records);
+      this.render(records, { fromCache: res.fromCache, offlineNoCache: res.offlineNoCache });
 
       // 智能停止：最新提交已出最终结果 → 自动停
       if (this.autoRefreshEnabled && this.smartStop && records.length > 0) {
@@ -89,7 +90,7 @@ export class StatusPanel {
     return shorts[code] || name.substring(0, 4).padEnd(4);
   }
 
-  private render(records: StatusRecord[]): void {
+  private render(records: StatusRecord[], src?: { fromCache?: boolean; offlineNoCache?: boolean }): void {
     const cid = this.state.getCurrentCid() || '-';
     const userId = this.state.getStudentId() || '-';
     const now = new Date().toLocaleString();
@@ -98,6 +99,9 @@ export class StatusPanel {
     if (this.filterPid) hintParts.push(`题目:${this.filterPid}`);
     if (this.autoRefreshEnabled && this.smartStop) hintParts.push('出结果自停');
     if (this.autoRefreshEnabled && !this.smartStop) hintParts.push(`刷新中 ${intervalSec}s`);
+    // 状态数据的时效性要求高：网络优先，缓存只作降级，因此必须让用户看见数据来源
+    if (src?.offlineNoCache) hintParts.push('离线模式 · 无本地缓存');
+    else if (src?.fromCache) hintParts.push('离线缓存');
     const autoHint = hintParts.length ? ` [${hintParts.join(' | ')}]` : '';
 
     let ac = 0, wa = 0, ce = 0, tle = 0, re = 0;

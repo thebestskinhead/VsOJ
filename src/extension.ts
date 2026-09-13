@@ -9,7 +9,7 @@ import { StateManager } from './utils/state';
 import {
   getBaseUrl, getStatusViewMode, getMcpEnabled, getMcpPort,
   getKeepAliveIntervalMs, getSessionProbeIntervalMs, getAutoRelogin,
-  getAutoReplaySubmit, isOfflineMode,
+  getAutoReplaySubmit, isOfflineMode, isCacheEnabled, getCacheTtlMs, getStaleTtlMs,
 } from './utils/config';
 import { ContestTreeProvider } from './views/contestTree';
 import { ProblemTreeProvider } from './views/problemTree';
@@ -18,14 +18,18 @@ import { LoginWebview } from './webview/loginWebview';
 import { AccountWebview } from './webview/accountWebview';
 import { SubmitWebview } from './webview/submitWebview';
 import { ProblemWebview } from './webview/problemWebview';
-import { LANGUAGE_EXT } from './types';
+import { LANGUAGE_EXT, ProblemBrief } from './types';
 import { initDebugChannel, showDebugChannel, clearDebugChannel, setDebugEnabled, isDebugEnabled, logInfo } from './utils/debug';
 import { McpServer } from './mcp/server';
 import { McpToolHandler } from './mcp/tools';
 import { initMcpChannel, showMcpChannel, disposeMcpChannel, clearMcpChannel } from './mcp/logger';
 import { initCacheStore } from './cache/store';
-import { SessionGuard, needsRelogin, PendingIntent } from './session/guard';
+import { ProblemRefresher } from './cache/refresher';
+import { ConnectivityProbe } from './session/connectivity';
+import { SessionGuard, needsRelogin, PendingIntent, classifyThrown } from './session/guard';
 import { SessionKeeper } from './session/keeper';
+import { parseProblemList } from './utils/parser';
+import { formatBytes } from './utils/format';
 
 /** 插件激活入口 */
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -34,14 +38,35 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // 初始化层
   const state = new StateManager(context);
   const auth = new AuthService(state);
-  const contestService = new ContestService(auth);
-  const problemService = new ProblemService();
-  const submitService = new SubmitService(auth);
 
-  // 缓存层（S1）— 所有离线能力的数据源
+  // 缓存层（S1）— 所有离线能力的数据源。
+  // 必须先于 api 层构造：api 层现在承担「缓存优先 + 原样写穿」的职责。
   const cache = initCacheStore(context);
 
+  const contestService = new ContestService(auth, cache);
+  const problemService = new ProblemService();
+  const submitService = new SubmitService(auth, cache);
+
+  // 网络可达性（S4.2）— 判定口径：拿到 HTTP 响应即视为可达，
+  // 因此这里用 validateStatus 放行所有状态码，只在网络层失败时才抛错。
+  const probe = new ConnectivityProbe({
+    ping: async () => {
+      await apiClient.get('/csrf.php', {
+        timeout: 4000,
+        headers: { 'Cache-Control': 'no-cache' },
+        validateStatus: () => true,
+      }, 'cache.ping');
+    },
+    log: (m) => logInfo(m),
+  });
+
+  // providers 在下方创建；配置监听注册得比它们早，因此用可变引用占位
+  let contestTreeRef: ContestTreeProvider | undefined;
+  let problemTreeRef: ProblemTreeProvider | undefined;
+
+  // ==========================================
   // 会话层（S2）— 失效识别 + 意图重放
+  // ==========================================
   const sessionGuard = new SessionGuard(context.globalState);
 
   // 会话状态栏（「更灵活的过期提醒」的常驻可见入口）
@@ -154,6 +179,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // 视图 Providers
   const contestTreeProvider = new ContestTreeProvider(contestService, state);
   const problemTreeProvider = new ProblemTreeProvider(contestService, state);
+  contestTreeRef = contestTreeProvider;
+  problemTreeRef = problemTreeProvider;
 
   // 注册 TreeView
   const contestTree = vscode.window.createTreeView('oj.contests', {
@@ -166,9 +193,50 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     showCollapseAll: false,
   });
 
+  // ==========================================
+  // 刷新执行器（S4.4 / S4.5）
+  //
+  // refresher 只做「拉原始 HTML → 落盘」，不做判定、不弹提示，因此可以按不同
+  // 作用域重复构造：单题刷新的 cid 来自题目页，全量刷新的 cid 来自当前比赛。
+  // ==========================================
+  function buildRefresher(cidProvider: () => string): ProblemRefresher {
+    return new ProblemRefresher({
+      fetchContestHtml: () => contestService.fetchProblemListRawHtml(cidProvider()),
+      fetchProblemHtml: (pid) => problemService.fetchProblemHtml(cidProvider(), pid),
+      fetchStatusHtml: () => submitService.fetchStatusHtml(state.getStudentId() || '', cidProvider()),
+      saveContestHtml: async (html) => {
+        const cid = cidProvider();
+        const parsed = parseProblemList(html);
+        // 比赛标题只存在于比赛页里 → 目录名在此定稿
+        await cache.writeContestPageHtml(cid, html, parsed.title);
+        await cache.touchContestMeta(cid, { title: parsed.title, problemCount: parsed.problems.length });
+      },
+      saveProblemHtml: (pid, html) => cache.writeProblemHtml(cidProvider(), pid, html),
+      saveStatusHtml: (html) => cache.writeStatusHtml(cidProvider(), html),
+      listPids: (html) => parseProblemList(html).problems.map(p => p.pid),
+      toError: (e) => describeThrown(e),
+      log: (m) => logInfo(m),
+    });
+  }
+
   // Webview 实例
   let loginWebview: LoginWebview | undefined;
-  const problemWebview = new ProblemWebview(problemService, state);
+  /**
+   * ProblemWebview 在构造时就需要 refresher，而 refresher 又需要知道「当前题目属于哪场比赛」，
+   * 因此用一个**延迟求值**的 provider 打破循环（provider 只在刷新动作真正发生时求值）。
+   */
+  let problemWebviewRef: ProblemWebview | undefined;
+  const resolveProblemCid = (): string =>
+    problemWebviewRef?.current.cid || state.getCurrentCid() || '';
+
+  const problemWebview = new ProblemWebview(problemService, state, {
+    store: cache,
+    probe,
+    refresher: buildRefresher(resolveProblemCid),
+    fetchAsset: (url) => apiClient.getBuffer(url, 'problem.asset'),
+    log: (m) => logInfo(m),
+  });
+  problemWebviewRef = problemWebview;
   const statusPanel = new StatusPanel(submitService, state);
 
   // ==========================================
@@ -396,10 +464,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     })
   );
 
-  // oj.refreshContests
+  // oj.refreshContests — 刷新比赛列表（忽略缓存强制联网）
   context.subscriptions.push(
     vscode.commands.registerCommand('oj.refreshContests', () => {
-      contestTreeProvider.clearSearch();
+      contestTreeProvider.clearSearch(true);
     })
   );
 
@@ -660,10 +728,216 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     })
   );
 
-  // oj.refreshProblems
+  // oj.refreshProblems — 刷新题目列表（忽略缓存强制联网）
   context.subscriptions.push(
     vscode.commands.registerCommand('oj.refreshProblems', () => {
+      problemTreeProvider.refresh(true);
+    })
+  );
+
+  // ==========================================
+  // 缓存刷新与清理（S4）
+  // ==========================================
+
+  // oj.cache.refreshProblem — 单题强制刷新（入口：题目页按钮 / 题目项右键菜单）
+  // 契约 C4：无视 15 分钟阈值、不弹确认；契约 C10：失败必须可见。
+  context.subscriptions.push(
+    vscode.commands.registerCommand('oj.cache.refreshProblem', async (item?: { problem?: ProblemBrief }) => {
+      const pid = item?.problem?.pid || problemWebview.current.pid;
+      const cid = item?.problem?.cid || problemWebview.current.cid || state.getCurrentCid() || '';
+      if (!cid || !pid) {
+        vscode.window.showErrorMessage('[OJ] 请先进入比赛并选择题目');
+        return;
+      }
+
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Window, title: `刷新题目 ${pid} 缓存` },
+        async () => {
+          const result = await buildRefresher(() => cid).refreshOne(pid);
+          if (!result.ok) {
+            vscode.window.showErrorMessage(`[OJ] 刷新题目 ${pid} 缓存失败：${result.error ?? '未知错误'}`);
+            return;
+          }
+          // 若题目页正显示该题，就地更新（保留滚动位置）
+          if (problemWebview.current.cid === cid && problemWebview.current.pid === pid) {
+            await problemWebview.reloadFromCache();
+          }
+          vscode.window.showInformationMessage(`[OJ] 题目 ${pid} 缓存已刷新`);
+        },
+      );
+    })
+  );
+
+  // oj.cache.refreshAllProblems — 全量强制刷新（入口：侧边栏「题目」标题栏按钮）
+  // 契约 C5/C6/C7：确认框 → 串行逐题 → 可取消进度 → 失败汇总
+  context.subscriptions.push(
+    vscode.commands.registerCommand('oj.cache.refreshAllProblems', async () => {
+      const cid = state.getCurrentCid();
+      if (!cid) {
+        vscode.window.showErrorMessage('[OJ] 请先进入比赛');
+        return;
+      }
+      if (isOfflineMode()) {
+        vscode.window.showWarningMessage('[OJ] 离线模式已开启，无法刷新缓存。请先关闭设置 oj.cache.offline');
+        return;
+      }
+      if (!(await probe.isReachable(true))) {
+        vscode.window.showWarningMessage('[OJ] 网络不可用，无法刷新缓存');
+        return;
+      }
+
+      // 取题目数以支撑确认框（走缓存优先，成本低）
+      let total = 0;
+      try {
+        total = (await contestService.fetchProblemList(cid)).problems.length;
+      } catch {
+        total = 0;
+      }
+
+      const hit = await vscode.window.showWarningMessage(
+        `将刷新比赛 ${cid} 全部 ${total || '?'} 道题的缓存（题目列表 + 题目详情 + 提交状态），继续？`,
+        { modal: true },
+        '继续',
+      );
+      if (hit !== '继续') { return; }
+
+      const refresher = buildRefresher(() => cid);
+      const summary = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `OJ 缓存刷新（${cid}）`, cancellable: true },
+        async (progress, token) => refresher.refreshAll({
+          token,
+          onProgress: (p) => progress.report({
+            message: `${p.index}/${p.total} 题目 ${p.pid}`,
+            increment: 100 / Math.max(1, p.total),
+          }),
+        }),
+      );
+
       problemTreeProvider.refresh();
+      contestTreeProvider.refresh();
+
+      const problems: string[] = [];
+      if (!summary.contestListOk) { problems.push('题目列表刷新失败'); }
+      if (!summary.statusOk) { problems.push('提交状态刷新失败'); }
+      if (summary.failed.length) { problems.push(`${summary.failed.length} 道题刷新失败`); }
+
+      if (problems.length === 0) {
+        vscode.window.showInformationMessage(
+          summary.cancelled
+            ? `[OJ] 已取消，已刷新 ${summary.ok}/${summary.total} 道题`
+            : `[OJ] 缓存刷新完成：${summary.ok} 道题`,
+        );
+        return;
+      }
+
+      const detail = [
+        `比赛：${cid}`,
+        `结果：${summary.cancelled ? '已取消' : '已完成'} ｜ 成功 ${summary.ok}/${summary.total}`,
+        summary.failed.length
+          ? `失败题目：\n${summary.failed.map(f => `  · ${f.pid}：${f.error}`).join('\n')}`
+          : '',
+        !summary.contestListOk ? '题目列表刷新失败（后续题目刷新已跳过）' : '',
+        !summary.statusOk ? '提交状态刷新失败' : '',
+      ].filter(Boolean).join('\n');
+
+      const choice = await vscode.window.showWarningMessage(
+        `[OJ] 缓存刷新：${problems.join('、')}`,
+        '查看详情',
+      );
+      if (choice === '查看详情') {
+        logInfo(`[cache] 刷新汇总\n${detail}`);
+        showDebugChannel();
+      }
+    })
+  );
+
+  // oj.cache.status — 缓存与网络状态诊断
+  context.subscriptions.push(
+    vscode.commands.registerCommand('oj.cache.status', async () => {
+      const layout = cache.layout;
+      const list = await cache.listCachedContests();
+      const dataBytes = list.reduce((a, c) => a + c.dataBytes, 0);
+      const userBytes = list.reduce((a, c) => a + c.userBytes, 0);
+      const snap = probe.snapshot();
+      const sec = (ms: number) => (ms < 0 ? '永不过期' : `${Math.round(ms / 1000)}s`);
+
+      const detail = [
+        `缓存根：${layout.rootDir}${layout.inWorkspace ? '' : '（全局兜底：当前无工作区）'}`,
+        `开关：cache.enabled=${isCacheEnabled()} ｜ cache.offline=${isOfflineMode()}`,
+        `TTL：同步读 ${sec(getCacheTtlMs())} ｜ 异步刷 ${sec(getStaleTtlMs())}`,
+        `已缓存比赛：${list.length} 场（站点数据 ${formatBytes(dataBytes)} ｜ 用户产物 ${formatBytes(userBytes)}）`,
+        `网络：${snap.lastOk === undefined ? '尚未探测' : snap.lastOk ? '可达' : '不可达'}` +
+          ` ｜ 探测 ${snap.probeCount} 次（结果缓存命中 ${snap.cachedHitCount} 次）`,
+      ].join('\n');
+
+      const choice = await vscode.window.showInformationMessage(
+        'OJ 缓存状态',
+        { modal: true, detail },
+        '打开缓存目录', '复制详情',
+      );
+      if (choice === '打开缓存目录') {
+        void vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(layout.rootDir));
+      } else if (choice === '复制详情') {
+        await vscode.env.clipboard.writeText(detail);
+        vscode.window.showInformationMessage('[OJ] 缓存详情已复制到剪贴板');
+      }
+    })
+  );
+
+  // oj.cache.purge — 清理缓存（契约：多选清理 + 全部清空；保留 code/ 与 test/）
+  context.subscriptions.push(
+    vscode.commands.registerCommand('oj.cache.purge', async () => {
+      const list = await cache.listCachedContests();
+      if (list.length === 0) {
+        vscode.window.showInformationMessage('[OJ] 暂无本地缓存');
+        return;
+      }
+
+      type PurgeItem = vscode.QuickPickItem & { cid: string };
+      const items: PurgeItem[] = list.map(c => ({
+        label: `$(database) ${c.cid}${c.title ? ' · ' + c.title : ''}`,
+        description: `缓存 ${formatBytes(c.dataBytes)}` +
+          (c.userBytes ? ` ｜ 用户产物 ${formatBytes(c.userBytes)}（保留）` : ''),
+        detail: `目录：${c.dirName} ｜ 题目数：${c.problemCount ?? '—'} ｜ 最近同步：${c.lastSyncAt}`,
+        cid: c.cid,
+      }));
+      items.push({
+        label: '$(trash) 清空全部比赛的缓存',
+        description: `合计 ${formatBytes(list.reduce((a, c) => a + c.dataBytes, 0))}`,
+        detail: '仅删除站点原始数据，保留 code/ 与 test/',
+        cid: '__ALL__',
+      });
+
+      const picked = await vscode.window.showQuickPick(items, {
+        canPickMany: true,
+        title: '清理缓存：选择要清理的比赛',
+        placeHolder: '仅删除站点原始数据（题目页 / 样例 / 图片 / 状态），保留 code/ 与 test/',
+      });
+      if (!picked || picked.length === 0) { return; }
+
+      const purgeAll = picked.some(p => p.cid === '__ALL__');
+      const targets = purgeAll ? list.map(c => c.cid) : picked.map(p => p.cid);
+      const bytes = purgeAll
+        ? list.reduce((a, c) => a + c.dataBytes, 0)
+        : list.filter(c => targets.includes(c.cid)).reduce((a, c) => a + c.dataBytes, 0);
+
+      const hit = await vscode.window.showWarningMessage(
+        `将清理 ${targets.length} 场比赛的缓存，预计释放 ${formatBytes(bytes)}。\n` +
+        '仅删除站点原始数据，code/（你的代码）与 test/（测试结果）会保留。此操作不可撤销。',
+        { modal: true },
+        '清理',
+      );
+      if (hit !== '清理') { return; }
+
+      let done = 0;
+      for (const cid of targets) {
+        if (await cache.purgeContestData(cid)) { done += 1; }
+      }
+      problemTreeProvider.refresh();
+      contestTreeProvider.refresh();
+      vscode.window.showInformationMessage(
+        `[OJ] 已清理 ${done} 场比赛的缓存，释放约 ${formatBytes(bytes)}`,
+      );
     })
   );
 
@@ -895,6 +1169,21 @@ function numToLetter(n: number): string {
   let s = '', num = n;
   do { s = String.fromCharCode(65 + (num % 26)) + s; num = Math.floor(num / 26) - 1; } while (num >= 0);
   return s;
+}
+
+/**
+ * 离线状态同步到 context key，供菜单 `when` 条件使用
+ * （离线 / 无网时把「强制刷新全部题目缓存」按钮置灰，见契约 C8）。
+ */
+async function syncOfflineContext(): Promise<void> {
+  await vscode.commands.executeCommand('setContext', 'oj.offline', isOfflineMode());
+}
+
+/** 异常 → 用户可读文案；复用会话层的失败分类，保证全插件口径一致 */
+function describeThrown(e: unknown): string {
+  const classified = classifyThrown(e);
+  if (classified?.message) { return classified.message; }
+  return (e as any)?.message || '未知错误';
 }
 
 /** 浏览器模式：构建 status 页面 URL 并用外部浏览器打开 */

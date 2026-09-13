@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { ContestService, AccessError } from '../api/contest';
 import { StateManager } from '../utils/state';
 import { ProblemBrief, ProblemStatus } from '../types';
+import { isOfflineMode } from '../utils/config';
 
 /** 题目列表 TreeDataProvider — 复用 workspace.js 题目列表逻辑 */
 
@@ -14,13 +15,20 @@ export class ProblemTreeProvider implements vscode.TreeDataProvider<ProblemTreeI
   private problems: ProblemBrief[] = [];
   private contestTitle: string = '';
   private isLoading: boolean = false;
+  /** 下一次加载是否绕过缓存（「刷新题目列表」按钮用） */
+  private forceNext: boolean = false;
 
   constructor(contestService: ContestService, state: StateManager) {
     this.contestService = contestService;
     this.state = state;
   }
 
-  refresh(): void {
+  /**
+   * 刷新列表。
+   * @param force 忽略缓存强制联网
+   */
+  refresh(force: boolean = false): void {
+    if (force) { this.forceNext = true; }
     this._onDidChangeTreeData.fire(undefined);
   }
 
@@ -38,12 +46,15 @@ export class ProblemTreeProvider implements vscode.TreeDataProvider<ProblemTreeI
 
     try {
       this.isLoading = true;
-      const result = await this.contestService.fetchProblemList(cid);
+      const force = this.forceNext;
+      this.forceNext = false;
+      const result = await this.contestService.fetchProblemList(cid, { force });
       this.problems = result.problems;
       this.contestTitle = result.title;
 
       if (this.problems.length === 0) {
-        return [new ProblemTreeItem('暂无题目', 'empty', vscode.TreeItemCollapsibleState.None)];
+        const msg = isOfflineMode() ? '离线模式 · 无本地缓存的题目列表' : '暂无题目';
+        return [new ProblemTreeItem(msg, 'empty', vscode.TreeItemCollapsibleState.None)];
       }
 
       return this.problems.map(p => {
@@ -66,7 +77,8 @@ export class ProblemTreeProvider implements vscode.TreeDataProvider<ProblemTreeI
         return [new ProblemTreeItem(e.message, 'error', vscode.TreeItemCollapsibleState.None)];
       }
       console.error('[OJ] 题目列表加载失败:', e);
-      return [new ProblemTreeItem(`加载失败: ${e.message}`, 'error', vscode.TreeItemCollapsibleState.None)];
+      const hint = isOfflineMode() ? '（离线模式）' : '';
+      return [new ProblemTreeItem(`加载失败${hint}: ${e.message}`, 'error', vscode.TreeItemCollapsibleState.None)];
     } finally {
       this.isLoading = false;
     }

@@ -111,6 +111,11 @@
           "default": 180,
           "description": "缓存有效期（秒）。超期后重新请求网络。填 -1 表示永不过期"
         },
+        "oj.cache.staleSeconds": {
+          "type": "number",
+          "default": 900,
+          "markdownDescription": "「异步刷新」阈值（秒）。打开题目页时**先渲染本地缓存**，超过该年龄才在后台重新拉取。填 `-1` 表示永不后台刷新。\n\n与 `oj.cache.ttlSeconds` 的分工：`ttlSeconds` 管**同步读**（命中且新鲜就不发任何请求，用于比赛/题目列表），本项只管**题目详情**的后台刷新。"
+        },
         "oj.cache.offline": {
           "type": "boolean",
           "default": false,
@@ -264,6 +269,26 @@
       {
         "command": "oj.session.clearPending",
         "title": "OJ: 清除待提交任务"
+      },
+      {
+        "command": "oj.cache.refreshProblem",
+        "title": "OJ: 刷新本题缓存",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "oj.cache.refreshAllProblems",
+        "title": "OJ: 强制刷新全部题目缓存",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "oj.cache.status",
+        "title": "OJ: 缓存状态",
+        "icon": "$(database)"
+      },
+      {
+        "command": "oj.cache.purge",
+        "title": "OJ: 清理缓存",
+        "icon": "$(trash)"
       }
     ],
     "keybindings": [
@@ -306,6 +331,11 @@
           "group": "navigation"
         },
         {
+          "command": "oj.cache.refreshAllProblems",
+          "when": "view == oj.problems && oj.inContest && !oj.offline",
+          "group": "navigation"
+        },
+        {
           "command": "oj.exitContest",
           "when": "view == oj.problems && oj.inContest",
           "group": "navigation"
@@ -317,6 +347,11 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "oj.cache.refreshProblem",
+          "when": "view == oj.problems && viewItem == problem",
+          "group": "1_cache"
+        },
         {
           "command": "oj.enterContest",
           "when": "view == oj.contests && viewItem == contest"
