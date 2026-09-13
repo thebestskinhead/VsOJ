@@ -465,7 +465,8 @@
     "test:opensource": "npm run compile && node test/open-source.test.js",
     "test:config": "node test/config-consistency.test.js",
     "test:theme": "npm run compile && node test/theme.test.js",
-    "test:toolchain": "npm run compile && node test/toolchain.test.js"
+    "test:toolchain": "npm run compile && node test/toolchain.test.js",
+    "test:compare": "npm run compile && node test/compare.test.js"
   },
   "devDependencies": {
     "@types/cheerio": "^0.22.35",
