@@ -91,6 +91,46 @@
           "type": "number",
           "default": 9527,
           "description": "MCP 服务器监听端口"
+        },
+        "oj.workspace.root": {
+          "type": "string",
+          "default": ".vsoj",
+          "description": "本地缓存与比赛工作目录的名称（相对工作区根目录）。缓存内容、样例数据集、本地测试产物都放在这里，便于外部工具与 AI 直接消费"
+        },
+        "oj.cache.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "是否将比赛/题目/状态写入本地缓存（关闭后不影响网络请求，只是不再落盘）"
+        },
+        "oj.cache.ttlSeconds": {
+          "type": "number",
+          "default": 180,
+          "description": "缓存有效期（秒）。超期后重新请求网络。填 -1 表示永不过期"
+        },
+        "oj.cache.offline": {
+          "type": "boolean",
+          "default": false,
+          "description": "离线模式：只读本地缓存，不发起网络请求（用于无网络环境浏览已缓存的题目）"
+        },
+        "oj.session.keepAliveInterval": {
+          "type": "number",
+          "default": 240000,
+          "description": "会话保活心跳间隔（毫秒）。定时访问轻量页面以防止 Cookie 过期。填 0 关闭"
+        },
+        "oj.session.probeInterval": {
+          "type": "number",
+          "default": 600000,
+          "description": "登录态探测间隔（毫秒）。定期检查登录是否失效，填 0 表示仅跟随心跳探测"
+        },
+        "oj.session.autoRelogin": {
+          "type": "boolean",
+          "default": true,
+          "description": "识别到登录失效时，自动打开登录页"
+        },
+        "oj.session.autoReplaySubmit": {
+          "type": "boolean",
+          "default": true,
+          "description": "重新登录成功后，自动恢复原来的比赛与题目并回到提交页"
         }
       }
     },
@@ -305,7 +345,8 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./"
+    "watch": "tsc -watch -p ./",
+    "test:cache": "npm run compile && node test/cache-layout.test.js"
   },
   "devDependencies": {
     "@types/cheerio": "^0.22.35",
