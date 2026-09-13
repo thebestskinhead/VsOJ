@@ -33,6 +33,7 @@ import { parseProblemList } from './utils/parser';
 import { formatBytes, numToLetter } from './utils/format';
 import { ProblemInitializer } from './workspace/initializer';
 import { buildInitDeps } from './workspace/wiring';
+import { openSourceInLeftColumn as openLeftSource } from './workspace/openSource';
 import {
   InitEntryDismissals, NO_FOLDER_TEXT, decideOpenProblem, decideSubmit, makeFacts,
 } from './workspace/guard';
@@ -242,6 +243,28 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       initEntryDismissed: initDismissals.isDismissed(cid),
       contestInitialized: hasFolder ? await isContestInitialized(cid) : false,
       problemOnDisk,
+    });
+  }
+
+  /**
+   * 把该题的源文件开到左栏（C5：左代码右题目）。复用判定见 `workspace/openSource.ts`。
+   */
+  async function openSourceInLeftColumn(cid: string, pid: string): Promise<void> {
+    const paths = await cache.resolveContestDir(cid);
+    const file = paths?.mainSource(pid, getSourceFileName());
+    await openLeftSource(file, !!file && await cache.exists(file), {
+      visibleFilePaths: () => vscode.window.visibleTextEditors
+        .filter(e => e.document.uri.scheme === 'file')
+        .map(e => e.document.uri.fsPath),
+      openAndReveal: async (target) => {
+        const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(target));
+        // preview: false —— 每个题目的源文件都该是「固定标签」，否则点下一题就把它顶掉了
+        await vscode.window.showTextDocument(doc, {
+          viewColumn: vscode.ViewColumn.One,
+          preserveFocus: false,
+          preview: false,
+        });
+      },
     });
   }
 
@@ -652,8 +675,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         problemTreeProvider.refresh();
         vscode.window.showInformationMessage(`[OJ] 已进入比赛 ${cid}，定位题目 ${pid}`);
 
-        // 打开题目详情
-        await problemWebview.show(cid, pid);
+        // 打开题目详情（走 showProblem，以便享受懒初始化 + 左代码右题目）
+        await vscode.commands.executeCommand('oj.showProblem', cid, pid);
       } catch (e: any) {
         vscode.window.showErrorMessage(`操作失败: ${e.message}`);
       }
@@ -782,7 +805,33 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           vscode.window.showErrorMessage('请先进入比赛');
           return;
         }
-        await problemWebview.show(actualCid, pid);
+
+        const facts = await projectFacts(actualCid, pid);
+        const decision = decideOpenProblem(facts);
+
+        // C1：无文件夹 → 提醒（带按钮）后仍以只读方式展示题面
+        if (decision.promptOpenFolder) {
+          await ensureFolderForProject();
+        }
+
+        // C3：懒初始化该题（失败不阻断看题，只是没有本地文件）
+        if (decision.lazyInit) {
+          const r = await buildInitializer(actualCid).ensureProblem({ pid });
+          if (r.ok) {
+            if (r.createdSource || r.fetched) { problemTreeProvider.refresh(); }
+          } else {
+            vscode.window.showWarningMessage(
+              `[OJ] 本题本地初始化失败：${r.error ?? '未知错误'}（仍可查看题面）`,
+            );
+          }
+        }
+
+        // C5：左侧源码、右侧题目 —— 先开源码再开面板，保证栏位顺序
+        if (decision.split) {
+          await openSourceInLeftColumn(actualCid, pid);
+        }
+
+        await problemWebview.show(actualCid, pid, { readOnly: decision.noCache });
       } catch (e: any) {
         vscode.window.showErrorMessage(`加载题目失败: ${e.message}`);
       }
@@ -798,6 +847,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
         if (!cid || !pid) {
           vscode.window.showErrorMessage('请先进入比赛并选择题目');
+          return;
+        }
+
+        // C2：无工作区时明确提示并阻止提交
+        const gate = decideSubmit(await projectFacts(cid, pid));
+        if (!gate.allowed) {
+          vscode.window.showWarningMessage(gate.message ?? '[OJ] 当前无法提交');
           return;
         }
 

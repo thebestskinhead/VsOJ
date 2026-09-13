@@ -461,7 +461,8 @@
     "test:localize": "npm run compile && node test/localize.test.js",
     "test:init": "npm run compile && node test/init.test.js",
     "test:guard": "npm run compile && node test/workspace-guard.test.js",
-    "test:tree": "npm run compile && node test/project-tree.test.js"
+    "test:tree": "npm run compile && node test/project-tree.test.js",
+    "test:opensource": "npm run compile && node test/open-source.test.js"
   },
   "devDependencies": {
     "@types/cheerio": "^0.22.35",

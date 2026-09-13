@@ -49,8 +49,14 @@ export interface OpenProblemDecision {
   lazyInit: boolean;
   /** 打开 `main.cpp` 到左栏并把题目面板开到右栏 */
   split: boolean;
-  /** 题面按只读渲染：不写盘、不使用本地缓存 */
-  readOnly: boolean;
+  /**
+   * 题面渲染走「无缓存」路径 —— **只有没有工作区时才是 true**。
+   *
+   * 无工作区时缓存根会退化到 `globalStorage`，那是跨窗口共享的兜底目录，
+   * 既不该读也不该写（D15）。而「懒初始化关闭」只是不写项目目录，
+   * 题面照样可以走 `.vsoj/` 缓存 —— 两者不是一回事，因此拆成独立字段。
+   */
+  noCache: boolean;
   /** 结论原因，用于日志与文案选择 */
   reason: OpenProblemReason;
 }
@@ -70,17 +76,10 @@ export type OpenProblemReason =
 /** 提交闸门结论（C2） */
 export interface SubmitDecision {
   allowed: boolean;
-  /** 被拒原因 */
-  reason?: 'no-folder' | 'project-disabled';
+  /** 被拒原因（当前只有一种：没有打开文件夹） */
+  reason?: 'no-folder';
   /** 与用户沟通的文案（含「打开文件夹」指引） */
   message?: string;
-  /**
-   * 放行前是否需要先把这道题落到磁盘上。
-   *
-   * 提交读的是 `activeTextEditor`（D11），若该题还没落地，编辑器里可能是别的文件，
-   * 提交出去就错了 —— 所以这时要先 `ensureProblem` 再要求用户编辑 `main.cpp`。
-   */
-  ensureProblemFirst: boolean;
 }
 
 /** 「初始化项目」条目的可见性结论（C7） */
@@ -116,38 +115,40 @@ export const NO_FOLDER_TEXT = {
 export function decideOpenProblem(f: WorkspaceFacts): OpenProblemDecision {
   if (!f.hasFolder) {
     // C1：只读看题 + 提醒，不写盘、不开分栏、不用缓存
-    return { promptOpenFolder: true, lazyInit: false, split: false, readOnly: true, reason: 'no-folder' };
+    return { promptOpenFolder: true, lazyInit: false, split: false, noCache: true, reason: 'no-folder' };
   }
   if (!f.projectEnabled) {
-    return { promptOpenFolder: false, lazyInit: false, split: false, readOnly: true, reason: 'project-disabled' };
+    // 项目功能关闭 → 退化为纯网页客户端（题面仍可走 .vsoj 缓存）
+    return { promptOpenFolder: false, lazyInit: false, split: false, noCache: false, reason: 'project-disabled' };
   }
   if (f.problemOnDisk) {
     // C6：已经在磁盘上就不再写盘，直接分栏
-    return { promptOpenFolder: false, lazyInit: false, split: true, readOnly: false, reason: 'already-on-disk' };
+    return { promptOpenFolder: false, lazyInit: false, split: true, noCache: false, reason: 'already-on-disk' };
   }
   if (f.lazyInit) {
     // C3：懒初始化该题后立即分栏，不弹确认框
-    return { promptOpenFolder: false, lazyInit: true, split: true, readOnly: false, reason: 'needs-lazy-init' };
+    return { promptOpenFolder: false, lazyInit: true, split: true, noCache: false, reason: 'needs-lazy-init' };
   }
-  // C4：懒初始化关掉且该题未落地 → 只读，等用户显式初始化整个比赛
-  return { promptOpenFolder: false, lazyInit: false, split: false, readOnly: true, reason: 'lazy-init-off' };
+  // C4：懒初始化关掉且该题未落地 → 不分栏，等用户显式初始化整个比赛
+  return { promptOpenFolder: false, lazyInit: false, split: false, noCache: false, reason: 'lazy-init-off' };
 }
 
-/** 由事实推导提交闸门结论（C2） */
+/**
+ * 由事实推导提交闸门结论（C2）。
+ *
+ * **刻意只拦一种情况**：没有工作区。契约 C13 明确要求「提交行为不变 —— 提交
+ * `activeTextEditor` 的内容」，所以这里不额外校验「编辑器里的是不是 main.cpp」之类，
+ * 否则就是借着守卫之名改了既有行为。
+ */
 export function decideSubmit(f: WorkspaceFacts): SubmitDecision {
   if (!f.hasFolder) {
     return {
       allowed: false,
       reason: 'no-folder',
       message: NO_FOLDER_TEXT.submitBlocked,
-      ensureProblemFirst: false,
     };
   }
-  if (!f.projectEnabled) {
-    // 项目功能关闭 = 用户只是把本插件当纯网页客户端用，此时不写盘、也不阻止提交
-    return { allowed: true, ensureProblemFirst: false };
-  }
-  return { allowed: true, ensureProblemFirst: !f.problemOnDisk };
+  return { allowed: true };
 }
 
 /** 由事实推导「初始化项目」条目是否出现（C7） */

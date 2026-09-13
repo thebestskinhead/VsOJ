@@ -13,7 +13,7 @@ const { makeFacts } = G;
     const f = makeFacts({ hasFolder: false });
     const d = G.decideOpenProblem(f);
     check('弹提醒', d.promptOpenFolder, true);
-    check('只读渲染', d.readOnly, true);
+    check('不使用本地缓存', d.noCache, true);
     check('不写盘', d.lazyInit, false);
     check('不分栏', d.split, false);
     check('原因', d.reason, 'no-folder');
@@ -24,7 +24,6 @@ const { makeFacts } = G;
     check('提交被拒（C2）', d.allowed, false);
     check('拒绝原因', d.reason, 'no-folder');
     ok('提示里指明「打开文件夹」', d.message.includes('打开文件夹'));
-    check('不触发落盘', d.ensureProblemFirst, false);
   }
   {
     const d = G.decideInitEntry(makeFacts({ hasFolder: false }));
@@ -44,15 +43,14 @@ const { makeFacts } = G;
   {
     const f = makeFacts({ hasFolder: true, projectEnabled: false });
     const d = G.decideOpenProblem(f);
-    check('只读', d.readOnly, true);
     check('不写盘', d.lazyInit, false);
     check('不分栏', d.split, false);
     check('不弹「打开文件夹」', d.promptOpenFolder, false);
     check('原因', d.reason, 'project-disabled');
+    check('仍可使用 .vsoj 缓存（项目关闭 ≠ 关缓存）', d.noCache, false);
 
     const s = G.decideSubmit(f);
     check('提交仍放行（不因关闭项目而阻断）', s.allowed, true);
-    check('不强制落盘', s.ensureProblemFirst, false);
 
     check('不显示初始化条目', G.decideInitEntry(f).visible, false);
     check('原因', G.decideInitEntry(f).reason, 'project-disabled');
@@ -65,7 +63,7 @@ const { makeFacts } = G;
     const d = G.decideOpenProblem(f);
     check('写盘', d.lazyInit, true);
     check('分栏', d.split, true);
-    check('非只读', d.readOnly, false);
+    check('不使用无缓存路径', d.noCache, false);
     check('不弹确认框式提醒', d.promptOpenFolder, false);
     check('原因', d.reason, 'needs-lazy-init');
   }
@@ -77,7 +75,7 @@ const { makeFacts } = G;
     const d = G.decideOpenProblem(f);
     check('不写盘', d.lazyInit, false);
     check('不分栏', d.split, false);
-    check('只读', d.readOnly, true);
+    check('仍可使用 .vsoj 缓存（关懒初始化 ≠ 关缓存）', d.noCache, false);
     check('原因', d.reason, 'lazy-init-off');
   }
 
@@ -100,23 +98,26 @@ const { makeFacts } = G;
   {
     // 项目功能关闭时，即使文件在磁盘上也不碰（用户要的是纯客户端）
     const f = makeFacts({ hasFolder: true, projectEnabled: false, problemOnDisk: true });
-    check('项目关闭 → 仍只读', G.decideOpenProblem(f).readOnly, true);
+    check('项目关闭 → 不分栏', G.decideOpenProblem(f).split, false);
   }
 
-  // ---------- 6. 提交闸门 ----------
-  console.log('\n[6] 提交闸门（C2 / D11）');
+  // ---------- 6. 提交闸门（只拦「没有工作区」） ----------
+  console.log('\n[6] 提交闸门（C2：只拦没有工作区）');
   {
     const f = makeFacts({ hasFolder: true, projectEnabled: true, problemOnDisk: true });
     const s = G.decideSubmit(f);
     check('放行', s.allowed, true);
-    check('无需先落盘', s.ensureProblemFirst, false);
     check('无拒绝原因', s.reason, undefined);
   }
   {
+    // C13：提交行为不变 —— 题目是否已落地都不影响放行
     const f = makeFacts({ hasFolder: true, projectEnabled: true, problemOnDisk: false });
-    const s = G.decideSubmit(f);
-    check('放行', s.allowed, true);
-    ok('但要求先把该题落盘（否则会提交到别的文件）', s.ensureProblemFirst);
+    check('题目未落盘也照常放行（C13）', G.decideSubmit(f).allowed, true);
+  }
+  {
+    // 项目功能关闭 = 纯网页客户端，同样放行
+    const f = makeFacts({ hasFolder: true, projectEnabled: false });
+    check('项目关闭也放行', G.decideSubmit(f).allowed, true);
   }
 
   // ---------- 7. 「初始化项目」条目可见性（C7） ----------
@@ -165,7 +166,7 @@ const { makeFacts } = G;
     check('默认未暂不', f.initEntryDismissed, false);
     check('默认未初始化', f.contestInitialized, false);
     check('默认题未落地', f.problemOnDisk, false);
-    check('默认即只读看题', G.decideOpenProblem(f).readOnly, true);
+    check('默认无缓存可用', G.decideOpenProblem(f).noCache, true);
   }
 
   // ---------- 10. 穷举：无文件夹时能力恒定 ----------
@@ -179,7 +180,7 @@ const { makeFacts } = G;
             const d = G.decideOpenProblem(makeFacts({
               hasFolder: false, projectEnabled, lazyInit, problemOnDisk, contestInitialized,
             }));
-            if (d.split || d.lazyInit || !d.readOnly || !d.promptOpenFolder) { violations++; }
+            if (d.split || d.lazyInit || !d.noCache || !d.promptOpenFolder) { violations++; }
           }
         }
       }
@@ -190,7 +191,7 @@ const { makeFacts } = G;
     for (const projectEnabled of [true, false]) {
       for (const problemOnDisk of [true, false]) {
         const s = G.decideSubmit(makeFacts({ hasFolder: false, projectEnabled, problemOnDisk }));
-        if (s.allowed || s.ensureProblemFirst) { submitViolations++; }
+        if (s.allowed) { submitViolations++; }
       }
     }
     check('无文件夹时提交一律被拒（违反数）', submitViolations, 0);

@@ -51,6 +51,14 @@ export class ProblemWebview {
   private lastContentHtml = '';
   /** 防止并发刷新（页面按钮连点 / 后台刷新撞车） */
   private refreshing = false;
+  /**
+   * 只读模式（D15：未打开文件夹）。
+   *
+   * 此时**不使用本地缓存**：没有工作区就没有缓存根，读到的将是 globalStorage 里的
+   * 兜底目录，那与本机其他窗口的缓存混在一起，既不该读也不该写。因此直连站点、
+   * 图片也只走网络，并且不显示「刷新」按钮（无缓存可刷）。
+   */
+  private readOnly = false;
 
   constructor(problemService: ProblemService, state: StateManager, deps: ProblemWebviewDeps) {
     this.problemService = problemService;
@@ -63,12 +71,23 @@ export class ProblemWebview {
     return { cid: this.cid, pid: this.pid };
   }
 
-  async show(cid: string, pid: string): Promise<void> {
+  /**
+   * 打开题目。
+   *
+   * @param opts.readOnly 无工作区时由 `workspace/guard.ts` 的结论传入（C1）
+   */
+  async show(cid: string, pid: string, opts: { readOnly?: boolean } = {}): Promise<void> {
     await this.state.setCurrentPid(pid);
     this.cid = cid;
     this.pid = pid;
+    this.readOnly = !!opts.readOnly;
 
     this.ensurePanel();
+
+    if (this.readOnly) {
+      await this.renderFromNetwork();
+      return;
+    }
 
     // 会话式决策：首屏来源 + 是否需要后台刷新
     const stat = await this.deps.store.statProblemHtml(cid, pid);
@@ -98,12 +117,20 @@ export class ProblemWebview {
       // 缓存刚好被清掉 → 落到网络路径
     }
 
-    // ---------- 网络路径 ----------
+    await this.renderFromNetwork();
+  }
+
+  /** 网络路径：直接拉题面渲染（只读模式下不落盘） */
+  private async renderFromNetwork(): Promise<void> {
     this.panel!.webview.html = this.getLoadingHtml();
     try {
-      const rawHtml = await this.problemService.fetchProblemHtml(cid, pid);
-      await this.deps.store.writeProblemHtml(cid, pid, rawHtml);
-      await this.render(rawHtml, { text: '已更新 · 刚刚', kind: 'fresh' });
+      const rawHtml = await this.problemService.fetchProblemHtml(this.cid, this.pid);
+      if (!this.readOnly) {
+        await this.deps.store.writeProblemHtml(this.cid, this.pid, rawHtml);
+      }
+      await this.render(rawHtml, this.readOnly
+        ? { text: '只读预览 · 未打开文件夹（不写盘、不使用缓存）', kind: 'offline' }
+        : { text: '已更新 · 刚刚', kind: 'fresh' });
     } catch (e: any) {
       const offline = this.deps.store.offline;
       this.deps.log?.(`[problem] 加载失败：${e?.message ?? e}`);
@@ -121,6 +148,9 @@ export class ProblemWebview {
    * 与后台刷新的关键差别（契约 C10）：**失败必须可见**，不能静默吞掉。
    */
   public async refreshCurrent(): Promise<RefreshOneResult> {
+    if (this.readOnly) {
+      return { pid: this.pid, ok: false, error: '未打开文件夹，当前为只读预览，无缓存可刷新' };
+    }
     if (!this.cid || !this.pid) {
       return { pid: '', ok: false, error: '当前没有打开的题目' };
     }
@@ -222,15 +252,23 @@ export class ProblemWebview {
     this.panel!.webview.html = this.problemService.buildProblemHtml(detail, {
       banner: banner.text,
       bannerKind: banner.kind,
-      enableRefresh: true,
+      // 只读模式下没有缓存可刷，按钮只会误导
+      enableRefresh: !this.readOnly,
     });
   }
 
   /** 原始 HTML → 结构化详情（图片先本地化，优先本地缓存） */
   private async toDetail(rawHtml: string) {
     const localized = await localizeImages(rawHtml, {
-      readLocal: (url) => this.deps.store.readProblemAsset(this.cid, this.pid, url),
-      writeLocal: (url, buf) => this.deps.store.writeProblemAsset(this.cid, this.pid, url, buf),
+      // 只读模式不读也不写本地图片：没有工作区就没有该比赛对应的资产目录
+      readLocal: (url) => (this.readOnly
+        ? Promise.resolve(undefined)
+        : this.deps.store.readProblemAsset(this.cid, this.pid, url)),
+      writeLocal: async (url, buf) => {
+        if (!this.readOnly) {
+          await this.deps.store.writeProblemAsset(this.cid, this.pid, url, buf);
+        }
+      },
       fetchRemote: (url) => this.deps.fetchAsset(`${getBaseUrl()}${url}`),
       isOffline: () => this.deps.store.offline,
       baseUrl: () => getBaseUrl(),
