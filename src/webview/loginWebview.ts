@@ -4,16 +4,35 @@ import { StateManager } from '../utils/state';
 
 /** 登录 Webview — 复用 login.js 登录弹窗逻辑 */
 
+export interface LoginWebviewOptions {
+  /**
+   * 顶部提示文案。用于「登录已过期，重新登录后将自动返回原题目」等场景。
+   */
+  notice?: string;
+  /**
+   * 是否优先展示快捷登录（仅需验证码）。
+   * 会话过期自愈流程下，账号已保存时用户只需再输一次验证码。
+   */
+  preferQuick?: boolean;
+}
+
 export class LoginWebview {
   private panel: vscode.WebviewPanel | undefined;
   private auth: AuthService;
   private state: StateManager;
   private onLoginSuccess: () => void;
+  private options: LoginWebviewOptions;
 
-  constructor(auth: AuthService, state: StateManager, onLoginSuccess: () => void) {
+  constructor(
+    auth: AuthService,
+    state: StateManager,
+    onLoginSuccess: () => void,
+    options?: LoginWebviewOptions,
+  ) {
     this.auth = auth;
     this.state = state;
     this.onLoginSuccess = onLoginSuccess;
+    this.options = options ?? {};
   }
 
   async show(): Promise<void> {
@@ -137,6 +156,8 @@ export class LoginWebview {
   }
 
   getHtml(): string {
+    const notice = this.options.notice || '';
+    const preferQuick = this.options.preferQuick === true;
     return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
@@ -162,6 +183,7 @@ export class LoginWebview {
   .quick-hint{text-align:center;margin-bottom:12px;font-size:12px;color:#888;display:none}
   .quick-hint.show{display:block}
   .quick-hint strong{color:#2e7d32}
+  .notice{background:#fff8e1;border:1px solid #ffe082;color:#8d6e00;border-radius:6px;padding:10px 12px;font-size:12px;line-height:1.5;margin-bottom:14px;text-align:center}
   .divider{display:flex;align-items:center;margin:12px 0;gap:10px}
   .divider::before,.divider::after{content:'';flex:1;border-bottom:1px solid #e0e0e0}
   .divider span{color:#aaa;font-size:11px}
@@ -174,6 +196,7 @@ export class LoginWebview {
 <body>
 <div class="box">
   <h2>OJ 用户登录</h2>
+  <div class="notice" id="notice" style="display:${notice ? 'block' : 'none'}">${notice}</div>
   <div class="quick-hint" id="quickHint">快捷用户: <strong id="quickUser"></strong></div>
   <form id="loginForm">
     <div class="fg"><label for="username">用户名 / 学号</label><input type="text" id="username" placeholder="请输入用户名" required></div>
@@ -198,6 +221,7 @@ export class LoginWebview {
 <script>
   const v=acquireVsCodeApi();
   const $=id=>document.getElementById(id);
+  const PREFER_QUICK=${preferQuick ? 'true' : 'false'};
   function show(m,e){const el=$('message');el.textContent=m;el.className='msg '+(e?'msg-err':'msg-ok')}
   function refreshVcode(){v.postMessage({command:'refreshVcode'})}
   function setBtns(on){$('submitBtn').disabled=!on;$('quickBtn').disabled=!on}
@@ -226,7 +250,14 @@ export class LoginWebview {
       case 'accountLoaded':
         $('username').value=d.username;$('password').value='********';
         $('quickUser').textContent=d.username;$('quickHint').classList.add('show');
-        $('quickBtn').style.display='';break;
+        $('quickBtn').style.display='';
+        if(PREFER_QUICK){
+          // 会话过期自愈：账号已保存时只需再输一次验证码
+          $('quickBtn').style.fontWeight='bold';
+          $('quickHint').innerHTML='快捷用户: <strong>'+d.username+'</strong> ｜ 输入验证码即可继续';
+          $('vcode').focus();
+        }
+        break;
       case 'loginSuccess':show(d.message,false);break;
       case 'loginFail':show(d.message,true);setBtns(true);break;
       case 'error':show(d.message,true);break;

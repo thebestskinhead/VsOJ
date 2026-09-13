@@ -1,42 +1,21 @@
-// 缓存层布局验证（桩替换 vscode 模块；重点验证「同一 cid 只产生一个目录」）
-const Module = require('module');
+// 缓存层布局验证（重点验证「同一 cid 只产生一个目录」）
+// 运行：npm run test:cache
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
-
-const WORKSPACE = path.join(os.tmpdir(), 'vsoj-cache-test-ws');
-const GLOBAL_STORAGE = path.join(os.tmpdir(), 'vsoj-cache-test-gs');
-fs.rmSync(WORKSPACE, { recursive: true, force: true });
-fs.rmSync(GLOBAL_STORAGE, { recursive: true, force: true });
-fs.mkdirSync(WORKSPACE, { recursive: true });
-fs.mkdirSync(GLOBAL_STORAGE, { recursive: true });
+const { installVscodeStub, makeChecker } = require('./helpers/stub');
 
 const cfg = { 'workspace.root': '.vsoj', 'cache.enabled': true, 'cache.offline': false, 'cache.ttlSeconds': 180 };
-const vscodeStub = {
-  workspace: {
-    workspaceFolders: [{ uri: { scheme: 'file', fsPath: WORKSPACE } }],
-    getConfiguration: () => ({ get: (k, d) => (k in cfg ? cfg[k] : d) }),
-  },
-  Uri: { file: (p) => ({ fsPath: p }) },
-  commands: { executeCommand: () => {} },
-};
-const origResolve = Module._resolveFilename;
-Module._resolveFilename = function (request, ...rest) {
-  if (request === 'vscode') { return 'vscode-stub'; }
-  return origResolve.call(this, request, ...rest);
-};
-require.cache['vscode-stub'] = { id: 'vscode-stub', filename: 'vscode-stub', loaded: true, exports: vscodeStub };
+const env = installVscodeStub(cfg);
+const vscodeStub = env.vscode;
+const WORKSPACE = env.workspaceFolder;
+const GLOBAL_STORAGE = env.globalStorage;
 
 const P = require('../out/cache/paths.js');
 const { CacheStore } = require('../out/cache/store.js');
 
 const context = { globalStorageUri: { fsPath: GLOBAL_STORAGE } };
-let failures = 0;
-const check = (label, actual, expected) => {
-  const ok = JSON.stringify(actual) === JSON.stringify(expected);
-  if (!ok) { failures++; }
-  console.log(`${ok ? '  ok  ' : ' FAIL '} ${label}: ${JSON.stringify(actual)}${ok ? '' : `  ← 期望 ${JSON.stringify(expected)}`}`);
-};
+const { check, ok, done } = makeChecker();
 
 (async () => {
   const layout = P.CachePaths.resolve(context);
@@ -132,6 +111,5 @@ const check = (label, actual, expected) => {
   fs.rmSync(ws2, { recursive: true, force: true });
   fs.rmSync(GLOBAL_STORAGE, { recursive: true, force: true });
 
-  console.log(failures === 0 ? '\n✅ 全部通过' : `\n❌ ${failures} 项失败`);
-  process.exit(failures === 0 ? 0 : 1);
+  process.exit(done() ? 0 : 1);
 })().catch(e => { console.error('❌ 异常:', e); process.exit(2); });

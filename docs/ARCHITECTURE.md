@@ -90,13 +90,22 @@ extension.ts ── 组合根：构造服务 → 注册命令 → 装配 TreeVie
 - **探测**：低频（默认 10 分钟）请求 `/loginpage.php`，判 `logout.php` 标记 —— 与现有 `isLoggedIn()` **同一判定口径**，不新增第二套标准。
 - **失效识别**（G5 核心）：把「登录失效」从「其他失败」中**结构化**出来，而不是靠字符串：
 
-  | 信号 | 判定 |
-  |---|---|
-  | `submit.php` 返回 HTTP 500 且响应体为空 | `SESSION_EXPIRED`（实测） |
-  | 响应体含 `Not Invited!` / `不能查看题目` | `NO_PERMISSION`（非失效） |
-  | 响应体含 `No such Contest!` | `BAD_CONTEST`（非失效） |
-  | 心跳探测到无 `logout.php` 标记 | `SESSION_EXPIRED` |
-  | 其余网络异常 | `NETWORK` |
+  | 信号 | 判定 | 强度 |
+  |---|---|---|
+  | `submit.php` 返回 HTTP 5xx 且响应体为空 | `SESSION_EXPIRED` | 主（实测） |
+  | 请求最终落到**登录页**（含 `name="user_id"` + `vcode.php`，且不含 `logout.php`） | `SESSION_EXPIRED` | 主 |
+  | `302/303` 且 `Location` 指向 `loginpage` | `SESSION_EXPIRED` | 主（未跟随重定向时） |
+  | 响应体含 `Not Invited!` / `不能查看题目` / `尚未开始` | `NO_PERMISSION` | 辅 |
+  | 响应体含 `No such Contest!` | `BAD_TARGET` | 辅 |
+  | 响应体含「验证码…错误」 | `INVALID_VCODE` | 辅 |
+  | 连接被拒 / DNS / 超时 | `NETWORK` | 主 |
+
+  **重要修正（由测试发现）**：初版把**裸 `302` 一律判为失效**，但 `client.ts` 的
+  `maxRedirects: 5` 会自动跟随重定向，成功提交后同样会 302 到 `status.php` —— 直接判失效会
+  把「提交成功」误报成「登录过期」。因此：
+  - 分类器**不再**处理裸 302，改由 `SubmitService` 结合 `Location` 与**最终正文**判定；
+  - 新增 `looksLikeLoginPage()`：登录页有 `name="user_id"` + `vcode.php` 且**无** `logout.php`，
+    这是「跟随后的落点就是登录页」这一形态的可靠判据（实测确认）。
 
 - **自愈流程**（用户明确要求的行为）：
 
@@ -127,14 +136,24 @@ extension.ts ── 组合根：构造服务 → 注册命令 → 装配 TreeVie
 
 | 阶段 | 内容 | 交付物 | 状态 |
 |---|---|---|---|
-| **S0** | 站点机制 + 架构分析 | `docs/SITE_ANALYSIS.md`、`docs/ARCHITECTURE.md` | ✅ 本次 |
-| **S1** | 缓存层骨架 | `src/cache/paths.ts`、`src/cache/store.ts`、配置项 | ✅ 本次 |
-| **S2** | 会话保活 + 失效自愈 | `src/session/keeper.ts`、`src/session/guard.ts`、`submit` 错误分类、`extension.ts` 接线 | ✅ 本次 |
+| **S0** | 站点机制 + 架构分析 | `docs/SITE_ANALYSIS.md`、`docs/ARCHITECTURE.md` | ✅ |
+| **S1** | 缓存层骨架 | `src/cache/paths.ts`、`src/cache/store.ts`、配置项、`test/cache-layout.test.js` | ✅ |
+| **S2** | 会话保活 + 失效自愈 | `src/session/keeper.ts`、`src/session/guard.ts`、`submit` 错误分类、4 个会话命令、状态栏、`test/session.test.js` | ✅ |
 | **S3** | 静态资源层 | `media/login.html`、`media/submit.html`、`media/common.css`、`media/*.js`，webview 改为 `asWebviewUri` 加载 | 待办 |
 | **S4** | 缓存接入 views/api + 离线模式 | contestTree / problemTree / problemWebview 走缓存；`oj.cache.offline` 生效 | 待办 |
 | **S5** | 进入比赛自动初始化工作区 | `src/workspace/initializer.ts`；`meta.json` / `problem.md` / `samples/` | 待办 |
 | **S6** | 本地测试引擎 + MCP 扩展 | `src/test/runner.ts`、3 个新 MCP 工具、`.vscode/tasks.json` 模板 | 待办 |
 | **S7** | 状态页静态化 | 用静态页 + 缓存数据替换 `statusPanel` 的 `proxyNavigate` 代理渲染 | 待办 |
+
+### 测试与验证
+
+`npm test` 一次性跑完两套（共 100 项断言），全部脱离 VS Code 运行时：
+
+| 套件 | 断言数 | 覆盖 |
+|---|---|---|
+| `test/cache-layout.test.js` | 29 | 目录唯一性、幂等、重命名、索引兜底、多比赛隔离、slug 边界、禁用开关 |
+| `test/session.test.js` | 71 | 失效分类、登录页判定、意图重放与过期、保活时序（含重入/阈值/去重上报）、**对本地 HTTP 服务器端到端验证提交分类** |
+
 
 ### 阶段依赖
 

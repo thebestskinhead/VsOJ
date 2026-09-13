@@ -51,8 +51,12 @@ export class ContestService {
 
       const html = typeof response.data === 'string' ? response.data : '';
 
-      // 检测受限提示：比赛尚未开始/私有/无权限
-      if (html.includes('比赛尚未开始或私有') || html.includes('不能查看题目')) {
+      // 检测受限提示：比赛尚未开始 / 私有 / 未受邀 / 无权限
+      // `Not Invited!` 与 `尚未开始` 为依据 docs/SITE_ANALYSIS.md §5 实测补充的信号
+      if (html.includes('比赛尚未开始或私有')
+        || html.includes('不能查看题目')
+        || html.includes('尚未开始')
+        || html.includes('Not Invited!')) {
         // 先检查登录状态是否失效
         const loggedIn = await this.auth.isLoggedIn();
 

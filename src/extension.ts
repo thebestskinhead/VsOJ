@@ -4,9 +4,13 @@ import { apiClient } from './api/client';
 import { AuthService } from './api/auth';
 import { ContestService } from './api/contest';
 import { ProblemService } from './api/problem';
-import { SubmitService } from './api/submit';
+import { SubmitService, SubmitOutcome } from './api/submit';
 import { StateManager } from './utils/state';
-import { getBaseUrl, getStatusViewMode, getMcpEnabled, getMcpPort } from './utils/config';
+import {
+  getBaseUrl, getStatusViewMode, getMcpEnabled, getMcpPort,
+  getKeepAliveIntervalMs, getSessionProbeIntervalMs, getAutoRelogin,
+  getAutoReplaySubmit, isOfflineMode,
+} from './utils/config';
 import { ContestTreeProvider } from './views/contestTree';
 import { ProblemTreeProvider } from './views/problemTree';
 import { StatusPanel } from './views/statusPanel';
@@ -19,6 +23,9 @@ import { initDebugChannel, showDebugChannel, clearDebugChannel, setDebugEnabled,
 import { McpServer } from './mcp/server';
 import { McpToolHandler } from './mcp/tools';
 import { initMcpChannel, showMcpChannel, disposeMcpChannel, clearMcpChannel } from './mcp/logger';
+import { initCacheStore } from './cache/store';
+import { SessionGuard, needsRelogin, PendingIntent } from './session/guard';
+import { SessionKeeper } from './session/keeper';
 
 /** 插件激活入口 */
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -31,12 +38,59 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const problemService = new ProblemService();
   const submitService = new SubmitService(auth);
 
-  // 更新 baseUrl 监听
+  // 缓存层（S1）— 所有离线能力的数据源
+  const cache = initCacheStore(context);
+
+  // 会话层（S2）— 失效识别 + 意图重放
+  const sessionGuard = new SessionGuard(context.globalState);
+
+  // 会话状态栏（「更灵活的过期提醒」的常驻可见入口）
+  const sessionStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
+  sessionStatusBar.command = 'oj.session.status';
+  sessionStatusBar.text = '$(circle-slash) OJ 未登录';
+  sessionStatusBar.tooltip = 'OJ 会话状态 — 点击查看详情';
+  sessionStatusBar.show();
+  context.subscriptions.push(sessionStatusBar);
+
+  // 会话保活（心跳 + 登录态探测）
+  // 心跳只发一次 /csrf.php（85B、无副作用），依据 docs/SITE_ANALYSIS.md §6：
+  // 任何携带 PHPSESSID 的请求都会刷新服务端会话 mtime，从而避免 Cookie 过期。
+  const sessionKeeper = new SessionKeeper(
+    {
+      beat: async () => {
+        await apiClient.get('/csrf.php', { headers: { 'Cache-Control': 'no-cache' } }, 'session.beat');
+      },
+      probe: async () => auth.isLoggedIn(),
+      shouldRun: () => state.isLoggedIn() && !isOfflineMode(),
+      onExpired: () => { void handleSessionExpired(); },
+      onTick: () => renderSessionStatus(),
+      log: (m) => logInfo(m),
+    },
+    {
+      keepAliveIntervalMs: getKeepAliveIntervalMs(),
+      probeIntervalMs: getSessionProbeIntervalMs(),
+    },
+  );
+  context.subscriptions.push({ dispose: () => sessionKeeper.dispose() });
+
+  // 配置变更监听
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration(e => {
       if (e.affectsConfiguration('oj.baseUrl')) {
         apiClient.updateBaseUrl(getBaseUrl());
         console.log('[OJ] BaseURL 已更新:', getBaseUrl());
+      }
+      if (e.affectsConfiguration('oj.workspace.root') || e.affectsConfiguration('oj.cache')) {
+        cache.rebind();
+        logInfo('[OJ] 缓存层已按新配置重新绑定');
+      }
+      if (e.affectsConfiguration('oj.session')) {
+        sessionKeeper.restart({
+          keepAliveIntervalMs: getKeepAliveIntervalMs(),
+          probeIntervalMs: getSessionProbeIntervalMs(),
+        });
+        renderSessionStatus();
+        logInfo('[OJ] 会话保活已按新配置重启');
       }
     })
   );
@@ -117,12 +171,186 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const problemWebview = new ProblemWebview(problemService, state);
   const statusPanel = new StatusPanel(submitService, state);
 
-  // 登录成功回调
-  const onLoginSuccess = async (): Promise<void> => {
+  // ==========================================
+  // 会话自愈编排
+  // 说明：以下均为函数声明（提升），便于被早期注册的监听器/命令引用。
+  //       业务判定一律委托给 session/guard.ts，此处只做「编排 + 提示」。
+  // ==========================================
+
+  /** 刷新会话状态栏 */
+  function renderSessionStatus(): void {
+    const snap = sessionKeeper.snapshot();
+    if (!state.isLoggedIn() || snap.lastProbeOk === false) {
+      sessionStatusBar.text = snap.lastProbeOk === false
+        ? '$(warning) OJ 登录已过期'
+        : '$(circle-slash) OJ 未登录';
+      sessionStatusBar.tooltip = snap.lastProbeOk === false
+        ? 'OJ 登录已过期 — 点击重新登录'
+        : 'OJ 未登录 — 点击查看会话详情';
+      sessionStatusBar.color = new vscode.ThemeColor('statusBarItem.warningForeground');
+      return;
+    }
+    const lastBeat = snap.lastBeatAt ? new Date(snap.lastBeatAt).toLocaleTimeString() : '—';
+    sessionStatusBar.text = '$(check) OJ 已登录';
+    sessionStatusBar.tooltip = `OJ 会话正常 ｜ 最近心跳 ${lastBeat} ｜ 心跳 ${snap.beatCount} 次`;
+    sessionStatusBar.color = undefined;
+  }
+
+  /** 登录态可用时启动保活 */
+  function startKeeperIfNeeded(): void {
+    renderSessionStatus();
+    if (state.isLoggedIn() && !isOfflineMode()) {
+      sessionKeeper.start();
+    }
+  }
+
+  /** 登录成功统一回调（所有登录入口共用） */
+  async function onLoginSuccess(): Promise<void> {
     await vscode.commands.executeCommand('setContext', 'oj.loggedIn', true);
     contestTreeProvider.refresh();
+    startKeeperIfNeeded();
     vscode.window.showInformationMessage('[OJ] 登录成功');
-  };
+    await replayPendingIntent();
+  }
+
+  /**
+   * 打开提交 Webview。
+   * `oj.submit` 命令与「登录后重放」共用此函数，避免出现两套提交入口。
+   */
+  async function openSubmitWebview(params: {
+    cid: string;
+    pid: string;
+    source: string;
+    language: number;
+    sourceFile?: string;
+  }): Promise<void> {
+    const { cid, pid, source, language, sourceFile } = params;
+    const pidLetter = numToLetter(parseInt(pid, 10));
+
+    const onSubmitSuccess = () => {
+      setTimeout(() => {
+        const mode = getStatusViewMode();
+        if (mode === 'browser') {
+          openStatusInBrowser(state);
+        } else if (mode === 'webview') {
+          statusPanel.startSubmitWebviewRefresh();
+        } else {
+          statusPanel.startSubmitAutoRefresh(pidLetter);
+        }
+      }, 4000);
+    };
+
+    const onSubmitFailure = (outcome: SubmitOutcome) => {
+      if (!needsRelogin(outcome.kind)) { return; }
+      // 提交入口是唯一需要「保留意图后重放」的地方：
+      // 题目页能进、提交却失败时，登录完成后应回到这里继续。
+      void handleSessionExpired({ cid, pid, sourceFile, language });
+    };
+
+    const submitWebview = new SubmitWebview(
+      auth, submitService, state,
+      cid, pid, source, language,
+      onSubmitSuccess, onSubmitFailure,
+    );
+    await submitWebview.show();
+    submitWebview.updateHtml();
+  }
+
+  /**
+   * 登录失效统一处理。
+   *
+   * @param intent 需要保留并重放的意图；仅由提交失败触发时传入。
+   *               心跳/探测发现失效（用户处于空闲）时无意图，只做提醒。
+   */
+  async function handleSessionExpired(intent?: Omit<PendingIntent, 'kind' | 'createdAt'>): Promise<void> {
+    await state.setLoggedIn(false);
+    renderSessionStatus();
+
+    if (intent) {
+      await sessionGuard.setPending({ kind: 'submit', ...intent });
+      logInfo(`[session] 已记录待重放提交意图 cid=${intent.cid} pid=${intent.pid}`);
+    }
+
+    if (!getAutoRelogin()) {
+      vscode.window.showWarningMessage(
+        '[OJ] 登录已过期：题目仍可浏览，但无法提交。请执行「OJ: 登录」后重试。',
+      );
+      return;
+    }
+
+    const message = intent
+      ? '[OJ] 登录已过期，本次提交未成功。重新登录后将自动返回原题目并继续提交。'
+      : '[OJ] 登录已过期，请重新登录。';
+    const hit = await vscode.window.showWarningMessage(message, '重新登录', '稍后处理');
+    if (hit !== '重新登录') { return; }
+
+    await openLoginWebview(intent
+      ? '登录已过期 — 登录成功后将自动返回原题目并打开提交页。'
+      : '登录已过期 — 登录成功后将自动恢复保活与状态刷新。');
+  }
+
+  /** 打开登录页；账号已保存时优先快捷登录（只需验证码） */
+  async function openLoginWebview(notice?: string): Promise<void> {
+    loginWebview = new LoginWebview(auth, state, onLoginSuccess, {
+      notice,
+      preferQuick: state.hasAccount(),
+    });
+    await loginWebview.show();
+    loginWebview.updateHtml();
+  }
+
+  /** 读取重放所需源码：优先取内存中的文档（保留未保存修改），否则读盘 */
+  async function readSourceForReplay(sourceFile?: string): Promise<string> {
+    if (!sourceFile) { return ''; }
+    const open = vscode.workspace.textDocuments.find(d => d.fileName === sourceFile);
+    if (open) { return open.getText(); }
+    try {
+      const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(sourceFile));
+      return Buffer.from(bytes).toString('utf8');
+    } catch {
+      return '';
+    }
+  }
+
+  /** 重新登录成功后：恢复比赛/题目上下文 → 打开原题目 → 回到提交页 */
+  async function replayPendingIntent(force: boolean = false): Promise<void> {
+    if (!force && !getAutoReplaySubmit()) { return; }
+
+    const replayed = await sessionGuard.replay(async (intent) => {
+      await state.setCurrentCid(intent.cid);
+      await state.setCurrentPid(intent.pid);
+      await vscode.commands.executeCommand('setContext', 'oj.inContest', true);
+      problemTreeProvider.refresh();
+
+      // 自动选择刚才的题目
+      await problemWebview.show(intent.cid, intent.pid);
+
+      const source = await readSourceForReplay(intent.sourceFile);
+      if (!source.trim()) {
+        vscode.window.showWarningMessage(
+          `[OJ] 已恢复比赛 ${intent.cid} 题目 ${intent.pid}，但未能读取源码文件，请打开文件后按 Ctrl+Shift+S 重新提交`,
+        );
+        return;
+      }
+
+      const language = intent.language
+        ?? LANGUAGE_EXT[path.extname(intent.sourceFile || '').toLowerCase()]
+        ?? 1;
+
+      await openSubmitWebview({
+        cid: intent.cid,
+        pid: intent.pid,
+        source,
+        language,
+        sourceFile: intent.sourceFile,
+      });
+      vscode.window.showInformationMessage('[OJ] 已回到原题目并打开提交页，请输入验证码继续');
+    });
+
+    if (replayed) {
+      logInfo('[session] 待重放意图已执行');
+    }
+  }
 
   // ==========================================
   // 注册命令
@@ -131,9 +359,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // oj.login
   context.subscriptions.push(
     vscode.commands.registerCommand('oj.login', async () => {
-      loginWebview = new LoginWebview(auth, state, onLoginSuccess);
-      await loginWebview.show();
-      loginWebview.updateHtml();
+      await openLoginWebview();
     })
   );
 
@@ -157,6 +383,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('oj.logout', async () => {
       try {
         await auth.logout();
+        sessionKeeper.stop();
+        await sessionGuard.clearPending();
+        renderSessionStatus();
         contestTreeProvider.refresh();
         problemTreeProvider.refresh();
         await vscode.commands.executeCommand('setContext', 'oj.inContest', false);
@@ -343,34 +572,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         const ext = path.extname(editor.document.fileName).toLowerCase();
         const defaultLang = LANGUAGE_EXT[ext] ?? 1;
 
-        // pid 数字转字母（0→A, 1→B, ...）
-        const pidLetter = numToLetter(parseInt(pid, 10));
-        const onSubmitSuccess = () => {
-          // 提交成功后延迟启动刷新
-          setTimeout(() => {
-            const mode = getStatusViewMode();
-            if (mode === 'browser') {
-              openStatusInBrowser(state);
-            } else if (mode === 'webview') {
-              statusPanel.startSubmitWebviewRefresh();
-            } else {
-              statusPanel.startSubmitAutoRefresh(pidLetter);
-            }
-          }, 4000);
-        };
-
-        const submitWebview = new SubmitWebview(
-          auth,
-          submitService,
-          state,
+        await openSubmitWebview({
           cid,
           pid,
           source,
-          defaultLang,
-          onSubmitSuccess,
-        );
-        await submitWebview.show();
-        submitWebview.updateHtml();
+          language: defaultLang,
+          sourceFile: editor.document.fileName,
+        });
       } catch (e: any) {
         vscode.window.showErrorMessage(`提交失败: ${e.message}`);
       }
@@ -534,6 +742,92 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   // ==========================================
+  // 会话相关命令（S2）
+  // ==========================================
+
+  // oj.session.status — 会话状态详情
+  context.subscriptions.push(
+    vscode.commands.registerCommand('oj.session.status', async () => {
+      const snap = sessionKeeper.snapshot();
+      const pending = await sessionGuard.peekPending();
+      const ago = (t?: number) => {
+        if (!t) { return '—'; }
+        const s = Math.round((Date.now() - t) / 1000);
+        return `${new Date(t).toLocaleTimeString()}（${s}s 前）`;
+      };
+      const detail = [
+        `登录态：${state.isLoggedIn() ? '已登录' : '未登录'}`,
+        `保活：${snap.running ? '运行中' : '已停止'}，间隔 ${Math.round(getKeepAliveIntervalMs() / 1000)}s，探测间隔 ${Math.round(getSessionProbeIntervalMs() / 1000)}s`,
+        `心跳：${ago(snap.lastBeatAt)} ｜ ${snap.lastBeatOk === undefined ? '—' : (snap.lastBeatOk ? '成功' : `失败（连续 ${snap.consecutiveBeatFailures} 次）`)} ｜ 累计 ${snap.beatCount} 次`,
+        `探测：${ago(snap.lastProbeAt)} ｜ ${snap.lastProbeOk === undefined ? '—' : (snap.lastProbeOk ? '登录有效' : '登录已失效')}`,
+        `待重放：${pending ? `提交 cid=${pending.cid} pid=${pending.pid}（${pending.createdAt}）` : '无'}`,
+        snap.lastError ? `最近错误：${snap.lastError}` : '',
+      ].filter(Boolean).join('\n');
+
+      const hit = await vscode.window.showInformationMessage(
+        'OJ 会话状态',
+        { modal: true, detail },
+        '立即探测', '复制详情',
+      );
+      if (hit === '立即探测') {
+        const ok = await sessionKeeper.probeNow();
+        renderSessionStatus();
+        vscode.window.showInformationMessage(`[OJ] 探测结果：${ok ? '登录有效' : '登录已失效'}`);
+      } else if (hit === '复制详情') {
+        await vscode.env.clipboard.writeText(detail);
+        vscode.window.showInformationMessage('[OJ] 会话详情已复制到剪贴板');
+      }
+    })
+  );
+
+  // oj.session.probeNow — 立即探测登录态
+  context.subscriptions.push(
+    vscode.commands.registerCommand('oj.session.probeNow', async () => {
+      if (!state.isLoggedIn()) {
+        vscode.window.showWarningMessage('[OJ] 当前未登录');
+        return;
+      }
+      const ok = await sessionKeeper.probeNow();
+      renderSessionStatus();
+      if (ok) {
+        vscode.window.showInformationMessage('[OJ] 登录有效');
+      } else {
+        vscode.window.showWarningMessage('[OJ] 登录已失效');
+      }
+    })
+  );
+
+  // oj.session.resumePending — 恢复待重放的提交任务
+  context.subscriptions.push(
+    vscode.commands.registerCommand('oj.session.resumePending', async () => {
+      const pending = await sessionGuard.peekPending();
+      if (!pending) {
+        vscode.window.showInformationMessage('[OJ] 没有待恢复的任务');
+        return;
+      }
+      if (!state.isLoggedIn()) {
+        const hit = await vscode.window.showWarningMessage(
+          `[OJ] 待恢复任务：比赛 ${pending.cid} 题目 ${pending.pid}。需先登录。`,
+          '前往登录', '取消',
+        );
+        if (hit === '前往登录') {
+          await openLoginWebview('登录成功后将自动恢复待提交任务。');
+        }
+        return;
+      }
+      await replayPendingIntent(true);
+    })
+  );
+
+  // oj.session.clearPending — 清除待重放任务
+  context.subscriptions.push(
+    vscode.commands.registerCommand('oj.session.clearPending', async () => {
+      await sessionGuard.clearPending();
+      vscode.window.showInformationMessage('[OJ] 已清除待恢复任务');
+    })
+  );
+
+  // ==========================================
   // 启动时恢复登录态
   // ==========================================
   async function restoreSession(): Promise<void> {
@@ -569,6 +863,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   await restoreSession();
   // 恢复完成后才允许 TreeView 加载数据，避免启动竞态
   contestTreeProvider.setReady();
+  // 登录态有效则启动保活心跳
+  startKeeperIfNeeded();
 
   // MCP 自动启动（如果设置中启用了）
   if (getMcpEnabled()) {

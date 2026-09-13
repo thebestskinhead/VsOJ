@@ -35,7 +35,11 @@
     "onCommand:oj.login",
     "onCommand:oj.submit",
     "onCommand:oj.openSettings",
-    "onCommand:oj.accountSettings"
+    "onCommand:oj.accountSettings",
+    "onCommand:oj.session.status",
+    "onCommand:oj.session.probeNow",
+    "onCommand:oj.session.resumePending",
+    "onCommand:oj.session.clearPending"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -244,6 +248,22 @@
         "command": "oj.mcp.clearLog",
         "title": "OJ: 清空 MCP 日志",
         "icon": "$(clear-all)"
+      },
+      {
+        "command": "oj.session.status",
+        "title": "OJ: 会话状态"
+      },
+      {
+        "command": "oj.session.probeNow",
+        "title": "OJ: 立即探测登录态"
+      },
+      {
+        "command": "oj.session.resumePending",
+        "title": "OJ: 恢复待提交任务"
+      },
+      {
+        "command": "oj.session.clearPending",
+        "title": "OJ: 清除待提交任务"
       }
     ],
     "keybindings": [
@@ -346,7 +366,9 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "test:cache": "npm run compile && node test/cache-layout.test.js"
+    "test": "npm run compile && node test/cache-layout.test.js && node test/session.test.js",
+    "test:cache": "npm run compile && node test/cache-layout.test.js",
+    "test:session": "npm run compile && node test/session.test.js"
   },
   "devDependencies": {
     "@types/cheerio": "^0.22.35",

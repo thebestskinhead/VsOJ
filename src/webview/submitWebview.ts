@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { AuthService } from '../api/auth';
-import { SubmitService } from '../api/submit';
+import { SubmitService, SubmitOutcome } from '../api/submit';
 import { StateManager } from '../utils/state';
 import { LANGUAGE_NAME } from '../types';
 
@@ -15,6 +15,8 @@ export class SubmitWebview {
   private source: string;
   private defaultLang: number;
   private onSubmitSuccess?: () => void;
+  /** 提交失败回调（含结构化失败类型）—— 由组合根决定是否触发重新登录 */
+  private onSubmitFailure?: (outcome: SubmitOutcome) => void;
 
   constructor(
     auth: AuthService,
@@ -25,6 +27,7 @@ export class SubmitWebview {
     source: string,
     defaultLang: number,
     onSubmitSuccess?: () => void,
+    onSubmitFailure?: (outcome: SubmitOutcome) => void,
   ) {
     this.auth = auth;
     this.submitService = submitService;
@@ -34,6 +37,7 @@ export class SubmitWebview {
     this.source = source;
     this.defaultLang = defaultLang;
     this.onSubmitSuccess = onSubmitSuccess;
+    this.onSubmitFailure = onSubmitFailure;
   }
 
   async show(): Promise<void> {
@@ -90,7 +94,13 @@ export class SubmitWebview {
         this.onSubmitSuccess?.();
         setTimeout(() => this.panel?.dispose(), 600);
       } else {
+        // kind 由 SubmitService 统一分类，这里只负责展示与上报
         this.panel?.webview.postMessage({ command: 'error', message: result.message });
+        if (result.kind === 'SESSION_EXPIRED') {
+          vscode.window.showWarningMessage(`[OJ] ${result.message}`);
+        }
+        this.onSubmitFailure?.(result);
+        // 验证码错误时立刻换一张；其余失败也换，避免复用已被消费的验证码
         await this.loadVcode();
       }
     } catch (e: any) {
