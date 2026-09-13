@@ -246,8 +246,10 @@ export class StatusPanel {
       }
     } catch (e: any) {
       if (this.statusWebviewPanel) {
-        this.statusWebviewPanel.webview.html = `
-          <html><body style="padding:20px;font-family:sans-serif;color:#c62828">
+        this.statusWebviewPanel.webview.html = `<!DOCTYPE html>
+          <html lang="zh-CN"><head><meta charset="UTF-8">
+          <style>html{color-scheme:light}body{padding:20px;font-family:sans-serif;color:#c62828;background:#fff}</style>
+          </head><body>
             <h3>加载状态页面失败</h3><p>${e.message}</p>
             <p>请确认 OJ 平台地址配置正确，且已登录。</p>
           </body></html>`;

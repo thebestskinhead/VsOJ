@@ -332,6 +332,8 @@ export class ProblemWebview {
   private getLoadingHtml(): string {
     return `<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><style>
+  /* 固定亮色主题：不跟随 VS Code 配色 */
+  html { color-scheme: light; }
   body { font-family: sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; color: #888; background: #fff; }
   .spinner { border: 3px solid #e0e0e0; border-top: 3px solid #4CAF50; border-radius: 50%; width: 32px; height: 32px; animation: spin 0.8s linear infinite; margin: 0 auto 16px; }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -342,6 +344,7 @@ export class ProblemWebview {
   private getErrorHtml(message: string): string {
     return `<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><style>
+  html { color-scheme: light; }
   body { font-family: sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; color: #c62828; background: #fff; }
   .hint { color: #888; font-size: 12px; margin-top: 8px; }
 </style></head>

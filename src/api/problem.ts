@@ -85,14 +85,16 @@ export class ProblemService {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${this.escapeHtml(detail.title)}</title>
   <style>
+    /* 固定亮色主题：不跟随 VS Code 配色（深色主题下题目页仍保持白底深字） */
+    html { color-scheme: light; }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
       font-size: 14px;
       line-height: 1.6;
-      color: var(--vscode-foreground, #333);
+      color: #333;
       padding: 0 20px 20px;
-      background: var(--vscode-editor-background, #fff);
+      background: #fff;
     }
     .oj-bar {
       position: sticky; top: 0; z-index: 10;
@@ -100,9 +102,9 @@ export class ProblemService {
       gap: 10px;
       margin: 0 -20px 16px; padding: 7px 14px;
       font-size: 12px;
-      border-bottom: 1px solid var(--vscode-panel-border, #ddd);
-      background: var(--vscode-editorWidget-background, #f7f7f7);
-      color: var(--vscode-descriptionForeground, #666);
+      border-bottom: 1px solid #ddd;
+      background: #f7f7f7;
+      color: #666;
     }
     .oj-bar-fresh { border-bottom-color: #4CAF50; color: #2e7d32; }
     .oj-bar-cache { border-bottom-color: #c8a800; }
@@ -111,11 +113,11 @@ export class ProblemService {
     .oj-bar-right { display: flex; align-items: center; gap: 8px; }
     .oj-bar button {
       font: inherit; font-size: 11px; padding: 2px 10px; cursor: pointer;
-      border: 1px solid var(--vscode-button-border, #ccc); border-radius: 3px;
-      background: var(--vscode-button-secondaryBackground, #f0f0f0);
-      color: var(--vscode-button-secondaryForeground, #333);
+      border: 1px solid #ccc; border-radius: 3px;
+      background: #f0f0f0;
+      color: #333;
     }
-    .oj-bar button:hover { background: var(--vscode-button-secondaryHoverBackground, #e0e0e0); }
+    .oj-bar button:hover { background: #e0e0e0; }
     .oj-spin {
       width: 10px; height: 10px; border-radius: 50%;
       border: 2px solid #bbb; border-top-color: #4CAF50;

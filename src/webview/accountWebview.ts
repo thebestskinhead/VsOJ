@@ -74,6 +74,8 @@ export class AccountWebview {
 <html lang="zh-CN">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
 <style>
+  /* 固定亮色主题：不跟随 VS Code 配色 */
+  html{color-scheme:light}
   *{margin:0;padding:0;box-sizing:border-box}
   body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:linear-gradient(135deg,#e8f5e9,#c8e6c9);display:flex;align-items:center;justify-content:center;min-height:100vh}
   .box{background:#fff;border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,0.15);width:380px;max-width:90vw;padding:32px}
