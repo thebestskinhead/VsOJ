@@ -462,7 +462,8 @@
     "test:init": "npm run compile && node test/init.test.js",
     "test:guard": "npm run compile && node test/workspace-guard.test.js",
     "test:tree": "npm run compile && node test/project-tree.test.js",
-    "test:opensource": "npm run compile && node test/open-source.test.js"
+    "test:opensource": "npm run compile && node test/open-source.test.js",
+    "test:config": "node test/config-consistency.test.js"
   },
   "devDependencies": {
     "@types/cheerio": "^0.22.35",
