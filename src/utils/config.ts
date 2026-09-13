@@ -76,6 +76,31 @@ export function getStaleTtlMs(): number {
 }
 
 // ============================================================
+// 比赛项目（本地工作区）
+// ============================================================
+
+/** 是否启用「比赛项目」相关能力（关闭后退化为纯网页客户端：不写盘、不分栏） */
+export function isProjectEnabled(): boolean {
+  return getConfig().get<boolean>('project.enabled', true);
+}
+
+/** 点开题目时是否自动把该题落到磁盘（懒初始化，D14 默认开） */
+export function isLazyInitEnabled(): boolean {
+  return getConfig().get<boolean>('project.lazyInit', true);
+}
+
+/** 题目源文件名（D8 默认 `main.cpp`） */
+export function getSourceFileName(): string {
+  const v = getConfig().get<string>('project.sourceFileName', 'main.cpp').trim();
+  return v || 'main.cpp';
+}
+
+/** 侧边栏「初始化项目」条目是否允许出现（D2；`false` 则彻底关闭） */
+export function isInitEntryVisible(): boolean {
+  return getConfig().get<boolean>('project.initEntryVisible', true);
+}
+
+// ============================================================
 // 会话保活
 // ============================================================
 

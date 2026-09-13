@@ -43,6 +43,18 @@ export class CacheStore {
   private paths: CachePaths;
   private context: vscode.ExtensionContext;
   private rootEnsured = false;
+  /**
+   * cid → 目录 + `pid → 目录名` 映射的同步快照。
+   *
+   * 为什么需要：`CacheStore` 的公开读取接口都是异步的（要读磁盘），但
+   * `initializer` 里「拼路径」的几个函数（`sourceFile` / `tempDir` / `testDir`）
+   * 签名是同步的 —— 它们只是字符串拼接，不该为了拿一个目录名就变成 async。
+   *
+   * 一致性由写入点保证：凡是改动目录或 `meta.problems` 的地方
+   * （`pathsForDir` / `ensureContestDir` / `registerProblem` / `finalizeContestTitle`）
+   * 都会刷新这里；`rebind()` 会整体作废。
+   */
+  private contestCache = new Map<string, { dir: string; problemDirs?: Record<string, string> }>();
 
   constructor(context: vscode.ExtensionContext, paths?: CachePaths) {
     this.context = context;
@@ -53,6 +65,7 @@ export class CacheStore {
   public rebind(): void {
     this.paths = CachePaths.resolve(this.context);
     this.rootEnsured = false;
+    this.contestCache.clear();
   }
 
   public get layout(): CachePaths { return this.paths; }
@@ -263,7 +276,23 @@ export class CacheStore {
    */
   private async pathsForDir(dir: string): Promise<ContestPaths> {
     const meta = await this.readJson<ContestMeta>(nodePath.join(dir, 'meta.json'));
-    return this.paths.contestAt(dir, pidDirMap(meta));
+    const problemDirs = pidDirMap(meta);
+    if (meta?.cid) {
+      this.contestCache.set(String(meta.cid), { dir, problemDirs });
+    }
+    return this.paths.contestAt(dir, problemDirs);
+  }
+
+  /**
+   * 同步取已解析的比赛路径（未解析过则 undefined）。
+   *
+   * 仅供「只拼路径、不需要 IO」的调用点使用；拿不到说明该比赛还没被
+   * `resolveContestDir` / `ensureContestDir` 解析过，调用方应先走异步入口。
+   */
+  public cachedContestPaths(cid: string): ContestPaths | undefined {
+    const entry = this.contestCache.get(String(cid));
+    if (!entry) { return undefined; }
+    return this.paths.contestAt(entry.dir, entry.problemDirs);
   }
 
   /**
@@ -321,6 +350,7 @@ export class CacheStore {
     };
     await this.writeJson(paths.meta, meta);
     await this.registerIndex(cid, paths.dir, meta.title, now);
+    this.contestCache.set(String(cid), { dir: paths.dir, problemDirs: undefined });
     return paths;
   }
 
@@ -417,6 +447,9 @@ export class CacheStore {
     meta.layoutVersion = paths.layoutVersion;
     meta.lastSyncAt = new Date().toISOString();
     await this.writeJson(paths.meta, meta);
+
+    // 同步快照：新建的题目目录名要立刻能被同步入口（initializer 拼路径）看到
+    this.contestCache.set(String(cid), { dir: paths.dir, problemDirs: pidDirMap(meta) });
 
     // 历史遗留迁移：<pid> → <字母>-<标题>（仅在旧目录存在且新目录不存在时）
     const legacy = nodePath.join(paths.dir, 'problems', sanitizePid(entry.pid));
@@ -588,6 +621,18 @@ export class CacheStore {
     const paths = await this.resolveContestDir(cid);
     if (!paths) { return undefined; }
     return this.readBuffer(nodePath.join(paths.problemAssetsDir(pid), assetFileName(url)));
+  }
+
+  /**
+   * 列出该题已落盘的图片文件名（**非空即认为已抓取过**）。
+   *
+   * 判据刻意只看「有没有」而不比对 URL 集合：题面图片属于「抓一次就够」的资源，
+   * 逐 URL 比对只会让增量初始化在题面改动时反复重下（见 `docs/PLAN_S5.md` §5.4）。
+   */
+  public async listProblemAssets(cid: string, pid: string): Promise<string[]> {
+    const paths = await this.resolveContestDir(cid);
+    if (!paths) { return []; }
+    try { return await fs.readdir(paths.problemAssetsDir(pid)); } catch { return []; }
   }
 
   // ============================================================

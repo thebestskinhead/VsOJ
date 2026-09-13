@@ -121,6 +121,26 @@
           "default": false,
           "description": "离线模式：只读本地缓存，不发起网络请求（用于无网络环境浏览已缓存的题目）"
         },
+        "oj.project.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "启用「比赛项目」能力：把题面、样例与 main.cpp 写入你打开的文件夹。关闭后退化为纯网页客户端（只读看题，不写盘、不分栏）"
+        },
+        "oj.project.lazyInit": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "**懒初始化**：点开某道题时自动把该题落到磁盘，随后左侧打开源文件、右侧显示题目。关闭后未初始化的题只读显示，需先在侧边栏点「初始化比赛项目」。"
+        },
+        "oj.project.sourceFileName": {
+          "type": "string",
+          "default": "main.cpp",
+          "description": "每道题新建的源文件名。提交时提交的是当前正在编辑的文件，因此改这里不影响提交逻辑"
+        },
+        "oj.project.initEntryVisible": {
+          "type": "boolean",
+          "default": true,
+          "description": "在侧边栏「题目列表」中显示「初始化比赛项目」条目。关闭后该条目不再出现（仍可用命令面板手动初始化）"
+        },
         "oj.session.keepAliveInterval": {
           "type": "number",
           "default": 240000,
@@ -289,6 +309,25 @@
         "command": "oj.cache.purge",
         "title": "OJ: 清理缓存",
         "icon": "$(trash)"
+      },
+      {
+        "command": "oj.project.openFolder",
+        "title": "OJ: 打开文件夹",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "oj.project.initialize",
+        "title": "OJ: 初始化比赛项目",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "oj.project.initializeProblem",
+        "title": "OJ: 初始化本题"
+      },
+      {
+        "command": "oj.project.dismissInitEntry",
+        "title": "暂不初始化",
+        "icon": "$(close)"
       }
     ],
     "keybindings": [
@@ -353,6 +392,16 @@
           "group": "1_cache"
         },
         {
+          "command": "oj.project.initialize",
+          "when": "view == oj.problems && viewItem == ojInitEntry",
+          "group": "inline@1"
+        },
+        {
+          "command": "oj.project.dismissInitEntry",
+          "when": "view == oj.problems && viewItem == ojInitEntry",
+          "group": "inline@2"
+        },
+        {
           "command": "oj.enterContest",
           "when": "view == oj.contests && viewItem == contest"
         },
@@ -411,7 +460,8 @@
     "smoke:site": "npm run compile && node scripts/smoke-site.js",
     "test:localize": "npm run compile && node test/localize.test.js",
     "test:init": "npm run compile && node test/init.test.js",
-    "test:guard": "npm run compile && node test/workspace-guard.test.js"
+    "test:guard": "npm run compile && node test/workspace-guard.test.js",
+    "test:tree": "npm run compile && node test/project-tree.test.js"
   },
   "devDependencies": {
     "@types/cheerio": "^0.22.35",

@@ -168,8 +168,6 @@ export function decideInitEntry(f: WorkspaceFacts): InitEntryDecision {
  */
 export class InitEntryDismissals {
   private readonly dismissed = new Set<string>();
-  /** 已进入过的比赛；重新进入同一比赛时清掉它的「暂不」记录 */
-  private readonly entered = new Set<string>();
 
   /** 用户点「暂不」 */
   public dismiss(cid: string): void {
@@ -177,14 +175,14 @@ export class InitEntryDismissals {
   }
 
   /**
-   * 标记「重新进入比赛」。
+   * 标记「进入比赛」。
    *
-   * D19 要求：下次启动或**重新进入比赛**时条目再出现一次。
-   * 因此再次进入同一 cid 时要把它从「暂不」名单里摘掉。
+   * D19 要求：下次启动或**重新进入比赛**时条目再出现一次 ——
+   * 所以每次进入比赛都清掉该比赛的「暂不」记录，视为一次全新的查看会话。
+   * 注意只清当前 cid：进别的比赛不该影响本比赛的隐藏状态。
    */
   public onEnterContest(cid: string): void {
-    if (this.entered.has(cid)) { this.dismissed.delete(cid); }
-    this.entered.add(cid);
+    this.dismissed.delete(cid);
   }
 
   public isDismissed(cid: string): boolean {
@@ -194,7 +192,6 @@ export class InitEntryDismissals {
   /** 供测试与「恢复默认」使用 */
   public clear(): void {
     this.dismissed.clear();
-    this.entered.clear();
   }
 }
 

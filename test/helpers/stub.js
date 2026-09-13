@@ -54,9 +54,16 @@ function installVscodeStub(config = {}, options = {}) {
     },
     Uri: { file: (p) => ({ fsPath: p, scheme: 'file' }) },
     EventEmitter: class { constructor() { this.event = () => ({ dispose: () => {} }); } fire() {} dispose() {} },
+    TreeItem: class {
+      constructor(label, collapsibleState) {
+        this.label = label;
+        this.collapsibleState = collapsibleState;
+      }
+    },
     ThemeIcon: class { constructor(id, color) { this.id = id; this.color = color; } },
     ThemeColor: class { constructor(id) { this.id = id; } },
     TreeItemCollapsibleState: { None: 0, Collapsed: 1, Expanded: 2 },
+    ProgressLocation: { SourceControl: 1, Window: 10, Notification: 15 },
     StatusBarAlignment: { Left: 1, Right: 2 },
     ViewColumn: { One: 1, Two: 2 },
     commands: { executeCommand: () => {}, registerCommand: () => ({ dispose: () => {} }) },

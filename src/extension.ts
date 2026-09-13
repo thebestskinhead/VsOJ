@@ -10,6 +10,7 @@ import {
   getBaseUrl, getStatusViewMode, getMcpEnabled, getMcpPort,
   getKeepAliveIntervalMs, getSessionProbeIntervalMs, getAutoRelogin,
   getAutoReplaySubmit, isOfflineMode, isCacheEnabled, getCacheTtlMs, getStaleTtlMs,
+  isProjectEnabled, isLazyInitEnabled, getSourceFileName,
 } from './utils/config';
 import { ContestTreeProvider } from './views/contestTree';
 import { ProblemTreeProvider } from './views/problemTree';
@@ -30,6 +31,11 @@ import { SessionGuard, needsRelogin, PendingIntent, classifyThrown } from './ses
 import { SessionKeeper } from './session/keeper';
 import { parseProblemList } from './utils/parser';
 import { formatBytes, numToLetter } from './utils/format';
+import { ProblemInitializer } from './workspace/initializer';
+import { buildInitDeps } from './workspace/wiring';
+import {
+  InitEntryDismissals, NO_FOLDER_TEXT, decideOpenProblem, decideSubmit, makeFacts,
+} from './workspace/guard';
 
 /** 插件激活入口 */
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -176,9 +182,76 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     dispose: () => { mcpServer.stop().catch(() => {}); },
   });
 
+  // ==========================================
+  // 比赛项目（S5）—— 本地工作区的写盘侧
+  //
+  // 「能不能写盘」由 workspace/guard.ts 判定（已单测穷举），这里只做编排：
+  // 读事实 → 问守卫 → 按结论执行副作用。所有提示文案取自 guard 的常量，
+  // 避免同一条规则在三个地方写出三种措辞。
+  // ==========================================
+  const initDismissals = new InitEntryDismissals();
+
+  /** 该比赛是否已初始化（比赛目录 + `meta.json` 存在） */
+  const isContestInitialized = async (cid: string): Promise<boolean> => {
+    try { return !!(await cache.readContestMeta(cid)); } catch { return false; }
+  };
+
+  /** 组装某一比赛的初始化器（依赖全部来自真实实现，见 wiring.ts） */
+  function buildInitializer(cid: string): ProblemInitializer {
+    return new ProblemInitializer(buildInitDeps({
+      cid,
+      store: cache,
+      problems: problemService,
+      fetchAsset: (url) => apiClient.getBuffer(url, 'project.asset'),
+      toError: (e) => describeThrown(e),
+      log: (m) => logInfo(m),
+    }));
+  }
+
+  /**
+   * 是否有可写的工作区。没有就按 D15 提醒（带「打开文件夹」按钮）并返回 false。
+   *
+   * 提醒而不是干吼：把「为什么不行」与「怎么解决」放在同一个交互里。
+   */
+  async function ensureFolderForProject(): Promise<boolean> {
+    if (vscode.workspace.workspaceFolders?.length) { return true; }
+    const pick = await vscode.window.showWarningMessage(
+      NO_FOLDER_TEXT.message,
+      { detail: NO_FOLDER_TEXT.detail, modal: false },
+      NO_FOLDER_TEXT.openFolderAction,
+    );
+    if (pick === NO_FOLDER_TEXT.openFolderAction) {
+      await vscode.commands.executeCommand('vscode.openFolder');
+    }
+    return false;
+  }
+
+  /** 读取当前环境事实（守卫的唯一输入） */
+  async function projectFacts(cid: string, pid?: string) {
+    const hasFolder = !!vscode.workspace.workspaceFolders?.length;
+    let problemOnDisk = false;
+    if (hasFolder && pid !== undefined) {
+      const paths = await cache.resolveContestDir(cid);
+      problemOnDisk = paths ? await cache.exists(paths.mainSource(pid, getSourceFileName())) : false;
+    }
+    return makeFacts({
+      hasFolder,
+      projectEnabled: isProjectEnabled(),
+      lazyInit: isLazyInitEnabled(),
+      initEntryVisible: true,
+      initEntryDismissed: initDismissals.isDismissed(cid),
+      contestInitialized: hasFolder ? await isContestInitialized(cid) : false,
+      problemOnDisk,
+    });
+  }
+
   // 视图 Providers
   const contestTreeProvider = new ContestTreeProvider(contestService, state);
-  const problemTreeProvider = new ProblemTreeProvider(contestService, state);
+  const problemTreeProvider = new ProblemTreeProvider(contestService, state, {
+    hasFolder: () => !!vscode.workspace.workspaceFolders?.length,
+    isContestInitialized,
+    dismissals: initDismissals,
+  });
   contestTreeRef = contestTreeProvider;
   problemTreeRef = problemTreeProvider;
 
@@ -532,6 +605,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       try {
         await state.setCurrentCid(cid);
         await vscode.commands.executeCommand('setContext', 'oj.inContest', true);
+        // 「暂不」只管本次会话：重新进入比赛时条目再出现一次（D19）
+        initDismissals.onEnterContest(cid);
         problemTreeProvider.refresh();
         vscode.window.showInformationMessage(`[OJ] 已进入比赛 ${cid}`);
       } catch (e: any) {
@@ -594,6 +669,107 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       problemTreeProvider.refresh();
       statusPanel.dispose();
       vscode.window.showInformationMessage('[OJ] 已退出比赛');
+    })
+  );
+
+  // ==========================================
+  // 比赛项目命令（S5.3）
+  // ==========================================
+
+  // oj.project.openFolder — 无文件夹占位项 / 提醒按钮的落点
+  context.subscriptions.push(
+    vscode.commands.registerCommand('oj.project.openFolder', async () => {
+      await vscode.commands.executeCommand('vscode.openFolder');
+    })
+  );
+
+  // oj.project.dismissInitEntry — 「暂不」= 本次会话隐藏（D19）
+  context.subscriptions.push(
+    vscode.commands.registerCommand('oj.project.dismissInitEntry', async (cid?: string) => {
+      const target = cid || state.getCurrentCid();
+      if (!target) { return; }
+      initDismissals.dismiss(target);
+      problemTreeProvider.refresh();
+    })
+  );
+
+  // oj.project.initializeProblem — 懒初始化单题（S5.4 与 MCP 共用）
+  context.subscriptions.push(
+    vscode.commands.registerCommand('oj.project.initializeProblem', async (cid: string, pid: string) => {
+      const facts = await projectFacts(cid, pid);
+      const decision = decideOpenProblem(facts);
+      if (decision.promptOpenFolder) {
+        await ensureFolderForProject();
+        return;
+      }
+      if (!decision.lazyInit) { return; }
+
+      const r = await buildInitializer(cid).ensureProblem({ pid });
+      if (!r.ok) {
+        vscode.window.showWarningMessage(`[OJ] 题目 ${pid} 初始化失败：${r.error ?? '未知错误'}`);
+        return;
+      }
+      problemTreeProvider.refresh();
+    })
+  );
+
+  // oj.project.initialize — 全量初始化（侧边栏「初始化项目」条目）
+  context.subscriptions.push(
+    vscode.commands.registerCommand('oj.project.initialize', async (cidArg?: string) => {
+      const cid = cidArg || state.getCurrentCid();
+      if (!cid) {
+        vscode.window.showInformationMessage('[OJ] 请先进入一场比赛');
+        return;
+      }
+      if (!(await ensureFolderForProject())) { return; }
+
+      // 题目列表缓存优先（离线且无缓存时给出可读失败，而不是空跑）
+      let briefs: ProblemBrief[] = [];
+      try {
+        briefs = (await contestService.fetchProblemList(cid, {})).problems;
+      } catch (e) {
+        vscode.window.showErrorMessage(`[OJ] 无法获取题目列表：${describeThrown(e)}`);
+        return;
+      }
+      if (briefs.length === 0) {
+        vscode.window.showInformationMessage('[OJ] 该比赛没有可初始化的题目');
+        return;
+      }
+
+      const hints = briefs.map(p => ({ pid: p.pid, globalId: p.globalId, title: p.title }));
+      const init = buildInitializer(cid);
+
+      await vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification,
+        title: `[OJ] 正在初始化比赛 ${cid}`,
+        cancellable: true,
+      }, async (progress, token) => {
+        const summary = await init.initializeContest(hints, {
+          token,
+          onProgress: p => progress.report({
+            increment: 100 / Math.max(1, p.total),
+            message: `${p.index}/${p.total}　${p.title || '题目 ' + p.pid}`,
+          }),
+        });
+
+        const parts: string[] = [`完成 ${summary.ok}/${summary.total} 道题`];
+        if (summary.createdSources) { parts.push(`新建源文件 ${summary.createdSources}`); }
+        if (summary.assets) { parts.push(`落盘图片 ${summary.assets}`); }
+
+        if (summary.failed.length) {
+          const first = summary.failed.slice(0, 3)
+            .map(f => `· 题目 ${f.pid}：${f.error}`).join('\n');
+          const more = summary.failed.length > 3 ? `\n…等共 ${summary.failed.length} 道失败` : '';
+          vscode.window.showWarningMessage(`[OJ] ${parts.join(' ｜ ')}\n${first}${more}`, { modal: true });
+        } else if (summary.cancelled) {
+          vscode.window.showWarningMessage(`[OJ] 已取消，${parts.join(' ｜ ')}（已完成的题目保留）`);
+        } else {
+          vscode.window.showInformationMessage(`[OJ] 初始化完成：${parts.join(' ｜ ')}`);
+        }
+      });
+
+      problemTreeProvider.refresh();
+      contestTreeProvider.refresh();
     })
   );
 
