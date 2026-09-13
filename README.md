@@ -5,11 +5,14 @@ OJ 在线判题平台 VS Code 插件，让你在 VS Code 内完成全部 OJ 操�
 ## 功能特性
 
 - **登录系统** — 支持验证码登录，Cookie 持久化，重启 VS Code 免密登录。支持「记住我」快捷登录，免去重复输入账号密码。**密码仅存储哈希值，不会明文保存；插件不连接开发者服务器，你的账号信息不会上传至任何第三方**
+- **会话保活** — 定时发送极轻量心跳（`/csrf.php`，约 85 字节）刷新服务端会话，避免长时间不操作导致 Cookie 过期
+- **登录失效自愈** — 精准识别「登录过期」并区别于普通失败：自动提示重新登录，**登录成功后自动恢复原来的比赛与题目并回到提交页**，无需重新逐级点进去
 - **比赛列表** — 侧边栏 TreeView 展示所有比赛，支持收藏、搜索、分页翻页
 - **题目列表** — 进入比赛后显示题目清单，标记已 AC 题目
 - **题目详情** — Webview Panel 渲染题目 HTML（图片 base64 内联）
 - **代码提交** — 一键提交当前编辑器代码（快捷键 `Ctrl+Shift+S`）
 - **状态查询** — 三合一状态查看：内嵌 Webview 页面 / 底部 Output 文本表格 / 系统浏览器打开，支持自动轮询刷新
+- **本地缓存** — 比赛 / 题目 / 状态写入工作区缓存目录（默认 `.vsoj/`），支撑离线浏览与后续的本地测试能力
 
 ## 配置
 
@@ -24,6 +27,15 @@ OJ 在线判题平台 VS Code 插件，让你在 VS Code 内完成全部 OJ 操�
 | `oj.statusViewMode` | `browser` | 状态查看方式：`browser`（外部浏览器）、`webview`（内嵌页面）、`output`（文本表格） |
 | `oj.mcp.enabled` | `false` | 插件启动时是否自动启动 MCP 服务器 |
 | `oj.mcp.port` | `9527` | MCP 服务器监听端口 |
+| `oj.workspace.root` | `.vsoj` | 本地缓存与比赛工作目录名称（相对工作区根目录） |
+| `oj.cache.enabled` | `true` | 是否把比赛/题目/状态写入本地缓存 |
+| `oj.cache.ttlSeconds` | `180` | 缓存有效期（秒），`-1` 表示永不过期 |
+| `oj.cache.offline` | `false` | 离线模式：只读本地缓存，不发起网络请求 |
+| `oj.session.keepAliveInterval` | `240000` | 会话保活心跳间隔（毫秒），`0` 关闭 |
+| `oj.session.probeInterval` | `600000` | 登录态探测间隔（毫秒），`0` 表示仅跟随心跳探测 |
+| `oj.session.autoRelogin` | `true` | 识别到登录失效时自动打开登录页 |
+| `oj.session.autoReplaySubmit` | `true` | 重新登录成功后自动恢复原题目并回到提交页 |
+
 
 ## 命令清单
 
@@ -53,6 +65,74 @@ OJ 在线判题平台 VS Code 插件，让你在 VS Code 内完成全部 OJ 操�
 | `oj.mcp.stop` | — | 停止 MCP 服务器 |
 | `oj.mcp.showLog` | — | 显示 MCP 服务器日志 |
 | `oj.mcp.clearLog` | — | 清空 MCP 服务器日志 |
+| `oj.session.status` | — | 查看会话状态（登录态 / 心跳 / 探测 / 待重放任务） |
+| `oj.session.probeNow` | — | 立即探测登录态是否有效 |
+| `oj.session.resumePending` | — | 恢复因登录过期而中断的提交任务 |
+| `oj.session.clearPending` | — | 清除待恢复的提交任务 |
+
+## 会话保活与登录失效自愈
+
+### 为什么需要保活
+
+OJ 的登录态完全绑定 `PHPSESSID`，服务端会话有效期取决于 `session.gc_maxlifetime`（通常约 24 分钟**空闲**）。
+判定依据是会话文件 mtime，**任何携带该 Cookie 的请求都会刷新 mtime**，因此定时发一次极轻量请求即可续期。
+
+- 心跳：每 `oj.session.keepAliveInterval`（默认 4 分钟）请求 `/csrf.php`（约 85 字节、无副作用）
+- 探测：每 `oj.session.probeInterval`（默认 10 分钟）复用插件既有的登录态判定逻辑
+- 心跳连续失败 3 次才会升级为一次探测，避免网络抖动被误判成「登录过期」
+
+状态栏右下角常驻显示会话状态：`✅ OJ 已登录` / `⚠️ OJ 登录已过期` / `⛔ OJ 未登录`，点击可查看详情。
+
+### 为什么「提交页能进、提交却失败」
+
+OJ 的题目页 `problem.php` 对**公开比赛**不校验登录，所以登录过期后题目照常打开；
+但 `submit.php` 一旦会话失效会直接返回 HTTP 500 空响应。插件现在会把这种失败识别为
+**登录过期**（而不是笼统的「提交失败」），并：
+
+1. 记住你正在提交的比赛、题目与代码文件
+2. 提示「登录已过期，是否重新登录并继续？」
+3. 打开登录页（账号已保存时只需再输一次验证码）
+4. 登录成功后**自动恢复比赛与题目、打开原题目、回到提交页**，输入验证码即可继续
+
+若中途关闭了 VS Code，任务会保留 30 分钟，可随时执行 `OJ: 恢复待提交任务` 手动恢复。
+
+## 本地缓存
+
+缓存写入工作区的 `oj.workspace.root` 目录（默认 `.vsoj/`），可被外部工具与 AI 直接读取：
+
+```
+.vsoj/
+├── contests.json                       比赛列表缓存
+└── contests/<cid>-<比赛标题>/
+    ├── meta.json                       比赛元信息
+    ├── problems.json                   题目列表
+    ├── status.json                     提交状态缓存
+    ├── assets/                         比赛级资源
+    └── problems/<pid>/
+        ├── problem.json                结构化题目详情
+        ├── problem.md                  题面 Markdown（便于 AI 阅读）
+        ├── code/                       用户代码 / 编译产物
+        └── samples/1.in, 1.out ...     样例数据集
+```
+
+- 可安全删除，插件会自动重建
+- 插件**不会**修改你的 `.gitignore`；如需忽略该目录请自行添加
+- 缓存目录名在首次创建时确定；若创建时尚无比赛标题，会先用纯 `cid` 命名，
+  拿到标题后自动重命名为 `<cid>-<标题>`（只发生一次）
+
+## 开发与测试
+
+```bash
+npm install
+npm run compile      # 编译
+npm test             # 编译 + 运行全部测试（100 项断言，无需 VS Code 运行时）
+npm run test:cache   # 仅缓存层
+npm run test:session # 仅会话层
+```
+
+测试通过替换 `vscode` 模块桩在 Node 中直接运行编译产物；会话层测试还会启动一个本地
+HTTP 服务器真实复现 OJ 的各类响应（500 空体 / 302 重定向 / 验证码错误 / 连接被拒等）。
+
 
 ## 使用流程
 
@@ -171,30 +251,66 @@ curl -X POST http://127.0.0.1:9527/mcp \
 VsOJ/
 ├── package.json
 ├── tsconfig.json
+├── docs/
+│   ├── SITE_ANALYSIS.md      # 目标 OJ 站点机制分析（验证码/会话/CSRF/登录态边界）
+│   └── ARCHITECTURE.md       # 架构分层、职责边界与分阶段演进路线
+├── test/                     # 脱离 VS Code 运行时的自动化测试
+│   ├── helpers/stub.js
+│   ├── cache-layout.test.js
+│   └── session.test.js
 ├── src/
-│   ├── extension.ts         
-│   ├── api/               
-│   │   ├── client.ts        
+│   ├── extension.ts          # 组合根：装配服务/命令/视图，只做编排不做判定
+│   ├── api/                  # 网络层：请求 + 交给 parser
+│   │   ├── client.ts         # axios 单例 + Cookie 管理
 │   │   ├── auth.ts           # 身份管理
 │   │   ├── contest.ts        # 比赛/题目列表
 │   │   ├── problem.ts        # 题目详情
 │   │   └── submit.ts         # 代码提交/状态查询
-│   ├── views/               
-│   │   ├── contestTree.ts    # 比赛 TreeView
-│   │   ├── problemTree.ts    # 题目 TreeView
-│   │   └── statusPanel.ts    # 状态面板
-│   ├── webview/              
-│   │   ├── loginWebview.ts   # 登录页面
-│   │   └── problemWebview.ts # 题目详情
-│   ├── utils/                # 工具层
-│   │   ├── parser.ts         
+│   ├── cache/                # 缓存层：离线能力的数据源
+│   │   ├── paths.ts          # 目录布局与命名规则（唯一路径来源）
+│   │   └── store.ts          # 缓存读写（唯一读写入口）
+│   ├── session/              # 会话层：保活与失效自愈
+│   │   ├── guard.ts          # 失效判定（唯一判定点）+ 意图重放
+│   │   └── keeper.ts         # 心跳保活与登录态探测
+│   ├── views/                # 展示层①：TreeView / OutputChannel
+│   │   ├── contestTree.ts
+│   │   ├── problemTree.ts
+│   │   └── statusPanel.ts
+│   ├── webview/              # 展示层②：Webview Panel
+│   │   ├── loginWebview.ts
+│   │   ├── accountWebview.ts
+│   │   ├── submitWebview.ts
+│   │   └── problemWebview.ts
+│   ├── mcp/                  # 对外层：MCP 服务器与工具
+│   ├── utils/                # 基础层
+│   │   ├── parser.ts         # 唯一 HTML 解析出口
 │   │   ├── crypto.ts         # MD5 加密
-│   │   ├── state.ts         
-│   │   └── config.ts         
+│   │   ├── state.ts          # 唯一持久化出口
+│   │   ├── config.ts
+│   │   └── debug.ts
 │   └── types/
-│       └── index.ts          
-└── out/                      
+│       └── index.ts
+└── out/                      # 编译产物
 ```
+
+分层约定：`api` 不碰 UI，`views`/`webview` 不直接发请求，`parser` 是唯一 HTML 解析口，
+`state` 是唯一持久化口，`cache/paths.ts` 是唯一缓存路径来源。
+
+## 变更记录
+
+功能按阶段增量提交，每个阶段可独立验证：
+
+| 阶段 | 内容 |
+|---|---|
+| S0 | 站点机制分析 + 架构演进路线（`docs/`） |
+| S1 | 本地缓存层骨架（`src/cache/`） |
+| S2 | 会话保活 + 登录失效自愈（`src/session/`） |
+| S3 | 静态资源层（登录/提交页外置为 `media/`） |
+| S4 | 缓存接入 views/api + 离线模式 |
+| S5 | 进入比赛自动初始化工作区（题目缓存、样例落盘） |
+| S6 | 本地测试引擎 + MCP 扩展（图片返回、样例识别、一键测试） |
+| S7 | 状态页静态化 |
+
 
 ## 常见问题
 
