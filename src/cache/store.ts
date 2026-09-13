@@ -3,24 +3,33 @@ import * as fs from 'fs/promises';
 import * as nodePath from 'path';
 import {
   CachePaths, ContestPaths, ContestMeta, CacheIndex,
-  sanitizePid, contestDirName, metaMatchesBaseUrl,
+  sanitizePid, contestDirName, metaMatchesBaseUrl, assetFileName,
 } from './paths';
 import { isCacheEnabled, isOfflineMode, getCacheTtlMs, getBaseUrl } from '../utils/config';
-import { Contest, ProblemBrief, ProblemDetail, StatusRecord, Pagination } from '../types';
+import { CacheStat, computeStat } from './freshness';
 
 /**
  * 【缓存层 · 存储】
  *
- * 唯一负责「读写缓存产物」的模块。提供：
- *  - 通用 JSON/文本 读写（含 TTL 新鲜度判定）
- *  - 领域级读写（比赛列表 / 题目列表 / 题目详情 / 状态 / 样例）
- *  - 比赛目录初始化（供 S5 工作区初始化与 S6 本地测试消费）
+ * 唯一负责「读写缓存产物」的模块。
  *
- * 设计约定：
- *  - **写穿（write-through）**：`api/*` 拿到解析结果后调用 `write*` 落盘
- *  - **先缓存后网络**：`views/*` 调用 `read*` 命中且新鲜则不打网络
- *  - `oj.cache.offline = true` 时，所有 `read*` 允许返回**过期**数据；`write*` 仍然执行（本地测试产物需要落盘）
- *  - 所有失败都**不抛异常**（缓存是增强，不是前提），仅返回 undefined / false
+ * ## 只存原始信息
+ *
+ * `write*` 一律只接收**来自站点的原始内容**：页面 HTML / 图片二进制 / 样例文本。
+ * 结构化对象（题目详情、状态记录、比赛列表）**不进缓存** —— 读取方拿到原始 HTML 后
+ * 自行解析（`utils/parser.ts`）。详见 `cache/paths.ts` 顶部的原则说明。
+ *
+ * 唯一的非站点产物是 `meta.json`，它是插件自身的元信息。
+ *
+ * ## 读语义
+ *
+ * - 默认 `read*` 只返回**新鲜**（TTL 内）的内容；过期视为未命中
+ * - `allowStale: true` 或 `oj.cache.offline = true` 时允许返回过期内容（离线预览）
+ * - 需要「知道有多旧」时用 {@link statCached}
+ *
+ * ## 失败语义
+ *
+ * 所有失败都**不抛异常**（缓存是增强，不是前提），返回 undefined / false。
  */
 export class CacheStore {
   private paths: CachePaths;
@@ -58,29 +67,16 @@ export class CacheStore {
 
   /** 写入 JSON（自动创建父目录；写失败静默） */
   public async writeJson(file: string, data: unknown): Promise<boolean> {
-    try {
-      await fs.mkdir(nodePath.dirname(file), { recursive: true });
-      await fs.writeFile(file, JSON.stringify(data, null, 2), 'utf8');
-      return true;
-    } catch (e) {
-      console.warn('[OJ][cache] 写入失败:', file, e);
-      return false;
-    }
+    return this.writeRaw(file, JSON.stringify(data, null, 2));
   }
 
   public async readText(file: string): Promise<string | undefined> {
     try { return await fs.readFile(file, 'utf8'); } catch { return undefined; }
   }
 
-  public async writeText(file: string, text: string): Promise<boolean> {
-    try {
-      await fs.mkdir(nodePath.dirname(file), { recursive: true });
-      await fs.writeFile(file, text, 'utf8');
-      return true;
-    } catch (e) {
-      console.warn('[OJ][cache] 写入失败:', file, e);
-      return false;
-    }
+  /** 读取二进制（图片等原始资源） */
+  public async readBuffer(file: string): Promise<Buffer | undefined> {
+    try { return await fs.readFile(file); } catch { return undefined; }
   }
 
   public async exists(target: string): Promise<boolean> {
@@ -95,6 +91,18 @@ export class CacheStore {
     try { await fs.mkdir(dir, { recursive: true }); } catch { /* ignore */ }
   }
 
+  /** 底层写文件（不做 enabled 判定，供 meta / 索引等插件自身数据使用） */
+  private async writeRaw(file: string, data: string | Buffer): Promise<boolean> {
+    try {
+      await fs.mkdir(nodePath.dirname(file), { recursive: true });
+      await fs.writeFile(file, data as any);
+      return true;
+    } catch (e) {
+      console.warn('[OJ][cache] 写入失败:', file, e);
+      return false;
+    }
+  }
+
   /** 文件是否在 TTL 内（ttlMs < 0 视为永不过期） */
   public async isFresh(file: string, ttlMs?: number): Promise<boolean> {
     const ttl = ttlMs ?? getCacheTtlMs();
@@ -105,22 +113,27 @@ export class CacheStore {
   }
 
   /**
-   * 领域统一读取入口：命中且新鲜 → 返回数据
-   *  - `offline = true`：跳过新鲜度要求，有文件就返回
-   *  - `allowStale = true`：返回过期数据（调用方可自行降级展示）
+   * 缓存状态快照（供「更新于 X 分钟前」与重访决策使用）。
+   * 时间基准是**文件 mtime**，即上次成功从网络同步的时间。
    */
-  private async readCached<T>(file: string, opts?: { allowStale?: boolean }): Promise<T | undefined> {
-    const data = await this.readJson<T>(file);
-    if (data === undefined) { return undefined; }
-    if (opts?.allowStale || this.offline) { return data; }
-    return (await this.isFresh(file)) ? data : undefined;
+  public async statCached(file: string): Promise<CacheStat> {
+    const m = await this.mtimeMs(file);
+    return computeStat(file, m, Date.now());
   }
 
-  /** 领域统一写入入口：`oj.cache.enabled = false` 时跳过 */
-  private async writeCached(file: string, data: unknown): Promise<boolean> {
+  /** 领域读：按 TTL 判定；offline 或 allowStale 时放行过期内容 */
+  private async readCachedText(file: string, opts?: { allowStale?: boolean }): Promise<string | undefined> {
+    const text = await this.readText(file);
+    if (text === undefined) { return undefined; }
+    if (opts?.allowStale || this.offline) { return text; }
+    return (await this.isFresh(file)) ? text : undefined;
+  }
+
+  /** 领域写：`oj.cache.enabled = false` 时整体跳过 */
+  private async writeCachedText(file: string, text: string): Promise<boolean> {
     if (!this.enabled) { return false; }
     await this.ensureRoot();
-    return this.writeJson(file, data);
+    return this.writeRaw(file, text);
   }
 
   // ============================================================
@@ -161,7 +174,7 @@ export class CacheStore {
   }
 
   // ============================================================
-  // 比赛
+  // 比赛目录
   // ============================================================
 
   /** 比赛目录是否已初始化 */
@@ -208,17 +221,23 @@ export class CacheStore {
 
   private contestPathsFromDir(dir: string): ContestPaths {
     const problemDir = (pid: string) => nodePath.join(dir, 'problems', sanitizePid(pid));
+    const problemRawDir = (pid: string) => nodePath.join(problemDir(pid), 'raw');
+    const testDir = (pid: string) => nodePath.join(problemDir(pid), 'test');
     return {
       dir,
       meta: nodePath.join(dir, 'meta.json'),
-      problemsIndex: nodePath.join(dir, 'problems.json'),
-      status: nodePath.join(dir, 'status.json'),
-      assetsDir: nodePath.join(dir, 'assets'),
+      rawDir: nodePath.join(dir, 'raw'),
+      contestHtml: nodePath.join(dir, 'raw', 'contest.html'),
+      statusHtml: nodePath.join(dir, 'raw', 'status.html'),
       problemDir,
-      problemJson: (pid: string) => nodePath.join(problemDir(pid), 'problem.json'),
-      problemMd: (pid: string) => nodePath.join(problemDir(pid), 'problem.md'),
-      codeDir: (pid: string) => nodePath.join(problemDir(pid), 'code'),
+      problemRawDir,
+      problemHtml: (pid: string) => nodePath.join(problemRawDir(pid), 'page.html'),
+      problemAssetsDir: (pid: string) => nodePath.join(problemDir(pid), 'assets'),
       samplesDir: (pid: string) => nodePath.join(problemDir(pid), 'samples'),
+      codeDir: (pid: string) => nodePath.join(problemDir(pid), 'code'),
+      testDir,
+      testResult: (pid: string) => nodePath.join(testDir(pid), 'result.json'),
+      testReport: (pid: string) => nodePath.join(testDir(pid), 'report.md'),
     };
   }
 
@@ -263,7 +282,7 @@ export class CacheStore {
     // 全新创建
     const paths = this.paths.contest(cid, title);
     await this.ensureDir(paths.dir);
-    await this.ensureDir(paths.assetsDir);
+    await this.ensureDir(paths.rawDir);
     const meta: ContestMeta = {
       cid,
       title: (title || '').trim(),
@@ -336,98 +355,110 @@ export class CacheStore {
     return this.readJson<ContestMeta>(paths.meta);
   }
 
-  // ============================================================
-  // 比赛列表
-  // ============================================================
-
-  public async readContestList(page: number, keyword?: string, opts?: { allowStale?: boolean }):
-    Promise<{ rows: Contest[]; pagination: Pagination } | undefined> {
-    return this.readCached(this.paths.contestListFile(page, keyword), opts);
-  }
-
-  public async writeContestList(page: number, keyword: string | undefined,
-    data: { rows: Contest[]; pagination: Pagination }): Promise<void> {
-    await this.writeCached(this.paths.contestListFile(page, keyword), data);
-  }
-
-  // ============================================================
-  // 题目列表
-  // ============================================================
-
-  public async readProblemList(cid: string, opts?: { allowStale?: boolean }):
-    Promise<{ title: string; problems: ProblemBrief[] } | undefined> {
+  /** 回写 meta 的同步信息（题目数量 / 时间），不覆盖已有标题 */
+  public async touchContestMeta(cid: string, patch: { title?: string; problemCount?: number }): Promise<void> {
     const paths = await this.resolveContestDir(cid);
-    if (!paths) { return undefined; }
-    return this.readCached(paths.problemsIndex, opts);
-  }
-
-  public async writeProblemList(cid: string, title: string, problems: ProblemBrief[]): Promise<void> {
-    // 只有这里知道「比赛标题」，目录名在此定稿；其余写入点一律传空标题以复用既有目录
-    const paths = await this.ensureContestDir(cid, title);
-    await this.writeCached(paths.problemsIndex, { title, problems });
+    if (!paths) { return; }
     const meta = await this.readJson<ContestMeta>(paths.meta);
-    if (meta) {
-      if (!meta.title && title) { meta.title = title; }
-      meta.problemCount = problems.length;
-      meta.lastSyncAt = new Date().toISOString();
-      await this.writeJson(paths.meta, meta);
-    }
+    if (!meta) { return; }
+    if (patch.title && !meta.title) { meta.title = patch.title; }
+    if (patch.problemCount !== undefined) { meta.problemCount = patch.problemCount; }
+    meta.lastSyncAt = new Date().toISOString();
+    await this.writeJson(paths.meta, meta);
   }
 
   // ============================================================
-  // 题目详情
+  // 比赛列表（原始 HTML）
   // ============================================================
 
-  public async readProblem(cid: string, pid: string, opts?: { allowStale?: boolean }):
-    Promise<ProblemDetail | undefined> {
+  public async readContestListHtml(page: number, keyword?: string, opts?: { allowStale?: boolean }):
+    Promise<string | undefined> {
+    return this.readCachedText(this.paths.contestListFile(page, keyword), opts);
+  }
+
+  public async writeContestListHtml(page: number, keyword: string | undefined, html: string): Promise<void> {
+    await this.writeCachedText(this.paths.contestListFile(page, keyword), html);
+  }
+
+  // ============================================================
+  // 比赛页（题目列表来源，原始 HTML）
+  // ============================================================
+
+  public async readContestPageHtml(cid: string, opts?: { allowStale?: boolean }): Promise<string | undefined> {
     const paths = await this.resolveContestDir(cid);
     if (!paths) { return undefined; }
-    return this.readCached<ProblemDetail>(paths.problemJson(pid), opts);
+    return this.readCachedText(paths.contestHtml, opts);
   }
 
-  public async writeProblem(detail: ProblemDetail): Promise<void> {
-    // 注意：detail.title 是**题目**标题，不是比赛标题，绝不可用于推导比赛目录名
-    const paths = await this.ensureContestDir(detail.cid, '');
-    await this.writeCached(paths.problemJson(detail.pid), detail);
-    await this.writeTextIfEnabled(paths.problemMd(detail.pid), problemToMarkdown(detail));
-  }
-
-  private async writeTextIfEnabled(file: string, text: string): Promise<void> {
-    if (!this.enabled) { return; }
-    await this.ensureRoot();
-    await this.writeText(file, text);
+  /**
+   * 落盘比赛页原始 HTML。
+   *
+   * `title` 用于把比赛目录名定稿为 `<cid>-<slug>`：比赛标题只存在于比赛页里，
+   * 因此这里是**唯一**能把目录名定稿的写入点（其余写入点一律传空标题以复用既有目录）。
+   */
+  public async writeContestPageHtml(cid: string, html: string, title?: string): Promise<void> {
+    const paths = await this.ensureContestDir(cid, title ?? '');
+    await this.writeCachedText(paths.contestHtml, html);
   }
 
   // ============================================================
-  // 状态
+  // 题目页（原始 HTML）
   // ============================================================
 
-  public async readStatus(cid: string, opts?: { allowStale?: boolean }): Promise<StatusRecord[] | undefined> {
+  public async readProblemHtml(cid: string, pid: string, opts?: { allowStale?: boolean }):
+    Promise<string | undefined> {
     const paths = await this.resolveContestDir(cid);
     if (!paths) { return undefined; }
-    return this.readCached<StatusRecord[]>(paths.status, opts);
+    return this.readCachedText(paths.problemHtml(pid), opts);
   }
 
-  public async writeStatus(cid: string, records: StatusRecord[]): Promise<void> {
+  public async writeProblemHtml(cid: string, pid: string, html: string): Promise<void> {
     const paths = await this.ensureContestDir(cid, '');
-    await this.writeCached(paths.status, records);
+    await this.writeCachedText(paths.problemHtml(pid), html);
+  }
+
+  /** 题目页缓存状态（供「更新于 X 分钟前」与重访决策使用） */
+  public async statProblemHtml(cid: string, pid: string): Promise<CacheStat> {
+    const paths = await this.resolveContestDir(cid);
+    if (!paths) { return computeStat('', undefined, Date.now()); }
+    return this.statCached(paths.problemHtml(pid));
   }
 
   // ============================================================
-  // 样例数据集
+  // 状态页（原始 HTML）
   // ============================================================
 
-  /** 写入第 index 组样例（index 从 1 开始） */
-  public async writeSample(cid: string, pid: string, index: number, input: string, output: string): Promise<void> {
+  public async readStatusHtml(cid: string, opts?: { allowStale?: boolean }): Promise<string | undefined> {
+    const paths = await this.resolveContestDir(cid);
+    if (!paths) { return undefined; }
+    return this.readCachedText(paths.statusHtml, opts);
+  }
+
+  public async writeStatusHtml(cid: string, html: string): Promise<void> {
+    const paths = await this.ensureContestDir(cid, '');
+    await this.writeCachedText(paths.statusHtml, html);
+  }
+
+  // ============================================================
+  // 样例数据集（原始文本）
+  // ============================================================
+
+  /** 写入样例数据集。站点固定单组样例，因此写为 1.in / 1.out；序号保留以兼容未来多组 */
+  public async writeSamples(cid: string, pid: string, samples: Array<{ index?: number; input: string; output: string }>): Promise<void> {
     const paths = await this.ensureContestDir(cid, '');
     const dir = paths.samplesDir(pid);
     await this.ensureDir(dir);
     if (!this.enabled) { return; }
-    await this.writeText(CachePaths.sampleIn(dir, index), input);
-    await this.writeText(CachePaths.sampleOut(dir, index), output);
+    let i = 0;
+    for (const s of samples) {
+      i += 1;
+      const index = s.index ?? i;
+      await this.writeRaw(CachePaths.sampleIn(dir, index), s.input ?? '');
+      await this.writeRaw(CachePaths.sampleOut(dir, index), s.output ?? '');
+    }
   }
 
-  /** 读取某题全部样例数据集 */
+  /** 读取某题全部样例数据集（离线场景下本地测试的数据来源） */
   public async readSamples(cid: string, pid: string): Promise<Array<{ index: number; input: string; output: string }>> {
     const paths = await this.resolveContestDir(cid);
     if (!paths) { return []; }
@@ -449,54 +480,134 @@ export class CacheStore {
     }
     return out;
   }
+
+  // ============================================================
+  // 题面图片（原始二进制）
+  // ============================================================
+
+  /**
+   * 落盘题面图片。文件名由 URL 确定性推导（见 `paths.assetFileName`），
+   * 因此渲染时用原 URL 即可反查本地文件，无需任何索引。
+   */
+  public async writeProblemAsset(cid: string, pid: string, url: string, data: Buffer | Uint8Array): Promise<void> {
+    const paths = await this.ensureContestDir(cid, '');
+    const dir = paths.problemAssetsDir(pid);
+    await this.ensureDir(dir);
+    if (!this.enabled) { return; }
+    await this.writeRaw(nodePath.join(dir, assetFileName(url)), Buffer.from(data));
+  }
+
+  /** 读取已落盘的题面图片；未缓存 → undefined（调用方决定是否联网） */
+  public async readProblemAsset(cid: string, pid: string, url: string): Promise<Buffer | undefined> {
+    const paths = await this.resolveContestDir(cid);
+    if (!paths) { return undefined; }
+    return this.readBuffer(nodePath.join(paths.problemAssetsDir(pid), assetFileName(url)));
+  }
+
+  // ============================================================
+  // 缓存清理
+  // ============================================================
+
+  /** 列出所有已缓存的比赛（含体积统计），供清理命令使用 */
+  public async listCachedContests(): Promise<CachedContestInfo[]> {
+    const base = nodePath.join(this.paths.rootDir, 'contests');
+    let names: string[] = [];
+    try { names = await fs.readdir(base); } catch { return []; }
+
+    const out: CachedContestInfo[] = [];
+    for (const name of names) {
+      const dir = nodePath.join(base, name);
+      const meta = await this.readJson<ContestMeta>(nodePath.join(dir, 'meta.json'));
+      if (!meta) { continue; }
+      const { dataBytes, userBytes } = await this.measureContest(dir);
+      out.push({
+        cid: meta.cid || name,
+        title: meta.title || '',
+        dir,
+        dirName: name,
+        lastSyncAt: meta.lastSyncAt,
+        problemCount: meta.problemCount,
+        dataBytes,
+        userBytes,
+      });
+    }
+    return out.sort((a, b) => (a.cid < b.cid ? -1 : a.cid > b.cid ? 1 : 0));
+  }
+
+  /**
+   * 清理单场比赛的缓存数据：删除**站点原始数据**（`raw/`、题目级 `raw/`+`assets/`+`samples/`），
+   * 保留 `meta.json`（插件元信息）、`code/`（用户源码与编译产物）、`test/`（本地测试产物）。
+   *
+   * 保留 `meta.json` 的原因：目录定位以它为准，删掉会导致下次进入比赛新建一个目录，
+   * 使用户保留的 `code/` 变成孤儿目录。
+   */
+  public async purgeContestData(cid: string): Promise<boolean> {
+    const paths = await this.resolveContestDir(cid);
+    if (!paths) { return false; }
+
+    await this.removeRecursive(paths.rawDir);
+
+    const problemsDir = nodePath.join(paths.dir, 'problems');
+    let pids: string[] = [];
+    try { pids = await fs.readdir(problemsDir); } catch { pids = []; }
+    for (const pid of pids) {
+      const pdir = nodePath.join(problemsDir, pid);
+      await this.removeRecursive(nodePath.join(pdir, 'raw'));
+      await this.removeRecursive(nodePath.join(pdir, 'assets'));
+      await this.removeRecursive(nodePath.join(pdir, 'samples'));
+    }
+    return true;
+  }
+
+  /** 清理全部比赛的缓存数据 */
+  public async purgeAllContests(): Promise<number> {
+    const list = await this.listCachedContests();
+    let n = 0;
+    for (const c of list) {
+      if (await this.purgeContestData(c.cid)) { n += 1; }
+    }
+    return n;
+  }
+
+  private async removeRecursive(target: string): Promise<void> {
+    try { await fs.rm(target, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+
+  /** 统计比赛目录体积：站点缓存数据 / 用户产物分开算 */
+  private async measureContest(dir: string): Promise<{ dataBytes: number; userBytes: number }> {
+    let dataBytes = 0;
+    let userBytes = 0;
+    const walk = async (cur: string, isUser: boolean): Promise<void> => {
+      let entries: import('fs').Dirent[] = [];
+      try { entries = await fs.readdir(cur, { withFileTypes: true }); } catch { return; }
+      for (const e of entries) {
+        const p = nodePath.join(cur, e.name);
+        const user = isUser || e.name === 'code' || e.name === 'test';
+        if (e.isDirectory()) {
+          await walk(p, user);
+        } else {
+          const size = await fs.stat(p).then(s => s.size).catch(() => 0);
+          if (user) { userBytes += size; } else { dataBytes += size; }
+        }
+      }
+    };
+    await walk(dir, false);
+    return { dataBytes, userBytes };
+  }
 }
 
-/** 题面 → Markdown（供 AI / MCP 直接阅读，S6 起被 MCP 工具引用） */
-export function problemToMarkdown(detail: ProblemDetail): string {
-  const html2md = (html: string): string => (html || '')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/(p|div|li|h[1-6])>/gi, '\n')
-    .replace(/<[^>]*>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-
-  const lines: string[] = [
-    `# ${detail.title || `题目 ${detail.pid}`}`,
-    '',
-    `- cid: \`${detail.cid}\``,
-    `- pid: \`${detail.pid}\``,
-    '',
-    '## 题目描述',
-    '',
-    html2md(detail.description) || '_（空）_',
-    '',
-    '## 输入',
-    '',
-    html2md(detail.inputDesc) || '_（空）_',
-    '',
-    '## 输出',
-    '',
-    html2md(detail.outputDesc) || '_（空）_',
-    '',
-    '## 样例输入',
-    '',
-    '```text',
-    detail.sampleInput ?? '',
-    '```',
-    '',
-    '## 样例输出',
-    '',
-    '```text',
-    detail.sampleOutput ?? '',
-    '```',
-    '',
-  ];
-  return lines.join('\n');
+/** 已缓存比赛的信息摘要 */
+export interface CachedContestInfo {
+  cid: string;
+  title: string;
+  dir: string;
+  dirName: string;
+  lastSyncAt: string;
+  problemCount?: number;
+  /** 站点缓存数据体积（清理会释放这部分） */
+  dataBytes: number;
+  /** 用户产物体积（code/ 与 test/，清理时保留） */
+  userBytes: number;
 }
 
 /** 缓存根 README（帮助外部工具 / AI 理解目录语义） */
@@ -506,28 +617,35 @@ const CACHE_README = `# VsOJ Pro 本地缓存
 
 - 缓存比赛 / 题目 / 提交状态，支持离线浏览
 - 为「一键本地测试」提供样例数据集
-- 为 AI Agent（MCP）提供结构化题面与资源
+- 为 AI Agent（MCP）提供原始题面与资源
+
+## 只存原始信息
+
+本缓存**只保存来自 OJ 站点的原始内容**：页面 HTML、图片二进制、样例文本。
+
+结构化数据（题目详情、状态记录、比赛列表）**不落盘** —— 读取方拿到原始 HTML 后自行解析。
+这样站点改版或解析逻辑升级后，已缓存内容会立刻生效，无需等待缓存过期。
 
 ## 布局
 
 \`\`\`
-contests/list-p<页码>[-kw<关键词>].json   比赛列表缓存（按页/关键词分片）
+contests/list-p<页码>[-kw<关键词>].html     比赛列表页原始 HTML
 contests/<cid>-<标题>/
-├── meta.json                       比赛元信息
-├── problems.json                   题目列表
-├── status.json                     提交状态缓存
-├── assets/                         比赛级资源（题面图片等）
-└── problems/<pid>/
-    ├── problem.json                结构化题目详情
-    ├── problem.md                  题面 Markdown（供 AI 阅读）
-    ├── code/                       用户代码 / 编译产物
-    ├── samples/1.in, 1.out ...     样例数据集
-    └── test/result.json            本地测试结果
+├── meta.json                          插件元信息（唯一非站点内容）
+├── raw/contest.html                   比赛页原始 HTML（题目列表来源）
+├── raw/status.html                    状态页原始 HTML
+├── problems/<pid>/
+│   ├── raw/page.html                  题目页原始 HTML
+│   ├── assets/<hash>-<name>.<ext>     题面图片原始二进制
+│   ├── samples/1.in, 1.out            原始样例文本
+│   ├── code/                          用户代码 / 编译产物
+│   └── test/result.json, report.md    本地测试产物
 \`\`\`
 
 ## 说明
 
 - 可安全删除：删除后插件会自动重建。
+- 执行「清理缓存」命令只会删除站点原始数据，**保留** \`code/\` 与 \`test/\`。
 - 如需纳入版本管理请自行调整 \`<workspace>/.gitignore\`，插件不会修改你的 \`.gitignore\`。
 - 缓存根目录可通过 VS Code 设置 \`oj.workspace.root\` 修改。
 `;
@@ -544,4 +662,4 @@ export function cacheStore(): CacheStore | undefined {
   return storeSingleton;
 }
 
-export { metaMatchesBaseUrl };
+export { metaMatchesBaseUrl, sanitizePid };

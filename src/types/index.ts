@@ -22,7 +22,12 @@ export interface ProblemBrief {
   submissionCount?: string;
 }
 
-/** 题目详情 */
+/**
+ * 题目详情 —— **内存中的解析产物**。
+ *
+ * 按「缓存只存原始信息」的原则，本对象**不落盘**；它由 `parser.ts` 从原始
+ * 题目页 HTML 现场解析得到。缓存里保存的是那份 HTML 本身。
+ */
 export interface ProblemDetail {
   cid: string;
   pid: string;
@@ -30,6 +35,8 @@ export interface ProblemDetail {
   description: string;
   inputDesc: string;
   outputDesc: string;
+  /** 「提示」小节（站点实测约 4/24 的题目有此节；无则为空字符串） */
+  hint?: string;
   sampleInput: string;
   sampleOutput: string;
 }

@@ -366,9 +366,13 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "test": "npm run compile && node test/cache-layout.test.js && node test/session.test.js",
+    "test": "npm run compile && node test/run-all.js",
     "test:cache": "npm run compile && node test/cache-layout.test.js",
-    "test:session": "npm run compile && node test/session.test.js"
+    "test:session": "npm run compile && node test/session.test.js",
+    "test:freshness": "npm run compile && node test/cache-freshness.test.js",
+    "test:connectivity": "npm run compile && node test/connectivity.test.js",
+    "test:revalidate": "npm run compile && node test/revalidate.test.js",
+    "test:refresh": "npm run compile && node test/refresh.test.js"
   },
   "devDependencies": {
     "@types/cheerio": "^0.22.35",

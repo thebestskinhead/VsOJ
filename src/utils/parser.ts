@@ -133,6 +133,8 @@ export function parseProblemDetail(html: string): ProblemDetail | null {
   const description = getPanelHtml('题目描述');
   const inputDesc = getPanelHtml('输入');
   const outputDesc = getPanelHtml('输出');
+  // 「提示」小节：站点实测 24 道有效题中 4 道有此节，标题为「提示」；兼容英文写法
+  const hint = getPanelHtml('提示') || getPanelHtml('Hint') || getPanelHtml('Note');
 
   // 样例输入/输出（严格保留空格和换行）
   function getRawText(selector: string): string {
@@ -155,6 +157,7 @@ export function parseProblemDetail(html: string): ProblemDetail | null {
     description,
     inputDesc,
     outputDesc,
+    hint,
     sampleInput,
     sampleOutput,
   };
