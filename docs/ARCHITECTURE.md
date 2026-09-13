@@ -60,6 +60,7 @@ extension.ts ── 组合根：构造服务 → 注册命令 → 装配 TreeVie
                         │  guard.ts   失效识别 + 意图重放  │
                         └─────────────────────────────┘
    media/  【静态资源层 · 新增】login.html / submit.html / *.css / *.js
+   workspace/ 【项目初始化层 · 新增】initializer.ts 落盘 · guard.ts 能力边界 · wiring.ts 接线
    test/   【本地测试层 · 新增】runner.ts  编译产物 × 样例 → 结果文件
 ```
 
@@ -68,7 +69,10 @@ extension.ts ── 组合根：构造服务 → 注册命令 → 装配 TreeVie
 | 新能力 | 归属 | 禁止事项 |
 |---|---|---|
 | 缓存读写 | `cache/store.ts` | 不允许 `views/*` 自己拼路径、自己 `fs.writeFile` |
-| 目录布局 | `cache/paths.ts` | 不允许业务代码硬编码 `.vsoj/contests/...` |
+| 目录布局 | `cache/paths.ts` | 不允许业务代码硬编码 `<cid>-<标题>/problems/...` |
+| 命名规则（slug / 题号字母 / 资产文件名） | `utils/slug.ts` | 不允许在 `paths.ts` 与 `initializer.ts` 各留一份实现 |
+| 项目初始化落盘 | `workspace/initializer.ts` | 不允许直接 `require('vscode')`；网络与磁盘动作必须依赖注入 |
+| 能力边界判定 | `workspace/guard.ts` | 不允许在命令实现里散写 `if (!workspaceFolders)` 之类的判断 |
 | 心跳与探测 | `session/keeper.ts` | 不允许在 `extension.ts` 里 `setInterval` |
 | 失效识别与重放 | `session/guard.ts` | 不允许 `webview/*` 直接调 `auth.login()` 后再自己跳转 |
 | 静态页面 | `media/*.html` | 不允许继续在 TS 里拼大段 HTML 字符串 |
@@ -140,19 +144,33 @@ extension.ts ── 组合根：构造服务 → 注册命令 → 装配 TreeVie
 | **S1** | 缓存层骨架 | `src/cache/paths.ts`、`src/cache/store.ts`、配置项、`test/cache-layout.test.js` | ✅ |
 | **S2** | 会话保活 + 失效自愈 | `src/session/keeper.ts`、`src/session/guard.ts`、`submit` 错误分类、4 个会话命令、状态栏、`test/session.test.js` | ✅ |
 | **S3** | 静态资源层 | `media/login.html`、`media/submit.html`、`media/common.css`、`media/*.js`，webview 改为 `asWebviewUri` 加载 | 待办 |
-| **S4** | 运行期缓存刷新 + 离线模式 | 详见 `docs/PLAN_S4.md`（契约 / 阶段 / 测试） | 计划中 |
-| **S5** | 进入比赛自动初始化工作区 | `src/workspace/initializer.ts`；`meta.json` / `problem.md` / `samples/` | 待办 |
+| **S4** | 运行期缓存刷新 + 离线模式 | 详见 `docs/PLAN_S4.md`（契约 / 阶段 / 测试） | ✅ |
+| **S5** | 比赛项目初始化（懒初始化 / 全量预取 / 左代码右题目 / 无工作区守卫） | `src/workspace/initializer.ts`、`guard.ts`、`wiring.ts`、`openSource.ts`；布局 v2；`test/{init,workspace-guard,project-tree,open-source}.test.js` | ✅ |
 | **S6** | 本地测试引擎 + MCP 扩展 | `src/test/runner.ts`、3 个新 MCP 工具、`.vscode/tasks.json` 模板 | 待办 |
 | **S7** | 状态页静态化 | 用静态页 + 缓存数据替换 `statusPanel` 的 `proxyNavigate` 代理渲染 | 待办 |
 
 ### 测试与验证
 
-`npm test` 一次性跑完两套（共 100 项断言），全部脱离 VS Code 运行时：
+`npm test` 一次性跑完全部套件（**12 套件 / 520 项断言**），全部脱离 VS Code 运行时
+（`vscode` 模块桩 + 本地 HTTP 服务器）：
 
 | 套件 | 断言数 | 覆盖 |
 |---|---|---|
-| `test/cache-layout.test.js` | 29 | 目录唯一性、幂等、重命名、索引兜底、多比赛隔离、slug 边界、禁用开关 |
-| `test/session.test.js` | 71 | 失效分类、登录页判定、意图重放与过期、保活时序（含重入/阈值/去重上报）、**对本地 HTTP 服务器端到端验证提交分类** |
+| `cache-layout` | 91 | 布局 v2、字母目录命名、幂等、重命名、索引兜底、多比赛隔离、slug 边界、清理语义 |
+| `session` | 71 | 失效分类、登录页判定、意图重放与过期、保活时序、**对本地 HTTP 服务器端到端验证提交分类** |
+| `init` | 83 | `ensureProblem` 幂等 / 增量 / 离线 / 取消 / 失败汇总 / 骨架内容 / 目录命名 |
+| `workspace-guard` | 65 | 无工作区穷举、提交闸门、条目可见性、暂不语义 |
+| `localize` | 38 | 图片本地化（含 `<a href>` 误伤回归用例） |
+| `refresh` | 38 | 刷新执行器串行 / 取消 / 失败可见性 |
+| `revalidate` | 38 | 重访五态决策 |
+| `project-tree` | 35 | 头部条目、占位项、列表失败降级 |
+| `cache-freshness` | 23 | TTL 边界 |
+| `connectivity` | 16 | 可达性探测与结果缓存 |
+| `open-source` | 11 | 左栏打开源码的复用判定 |
+| `config-consistency` | 11 | 声明的配置项 / 命令 / 菜单必须真的被消费 |
+
+另有真实站点冒烟：`npm run smoke:site`（**84 项断言**，驱动真实的
+`initializer` + `buildInitDeps` 跑完整链路）。
 
 
 ### 阶段依赖
@@ -161,8 +179,8 @@ extension.ts ── 组合根：构造服务 → 注册命令 → 装配 TreeVie
 S0 ─► S1 ─► S2        (S2 依赖 S1 记录心跳/意图)
           └─► S4      (S4 依赖 S1)
    S3 ──────────┘      (S3 与 S1/S2 无耦合，可并行)
-S1,S4 ─► S5 ─► S6      (S6 依赖 S5 的目录布局与样例落盘)
-S3,S4 ─► S7
+S1,S4 ─► S5 ─► S6      (S6 依赖 S5 的目录布局、样例与 temp/ 落位)
+S3,S4,S5 ─► S7
 ```
 
 ## 5. 兼容性与风险

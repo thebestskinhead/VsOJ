@@ -1,5 +1,10 @@
 # S5 比赛项目初始化 — 详细开发计划
 
+> **状态：已实施完成（2026-09-13）**。S5.0–S5.7 全部落地并提交
+> （`302c29f` → `8befccd` → `97cf269` → `9781b28` → `888d4a2` → `46acba7` → `af58e80`）。
+> 验收：`npm test` 12 套件 / 520 项断言 + `npm run smoke:site` 84 项真实站点断言全绿。
+> 实施结果与偏差见 `docs/PROGRESS.md` 的「S5 — 比赛项目初始化」一节。
+>
 > 本文档是 S5 的实施蓝图。**所有决策均由用户在 3 轮询问中逐条确认**（共 20 条，见 §2），
 > 本文不含 S6 本地测试引擎、S7 状态页静态化、S3 静态资源外置的实现细节。
 > 前置的 S4（网络 + 缓存闭环）已完成，见 `docs/PROGRESS.md`。
@@ -236,16 +241,16 @@ S5 的懒初始化正好接上这条线。
 
 ## 6. 阶段切分
 
-| 阶段 | 内容 | 可独立验证 |
-|---|---|---|
-| **S5.0** | 布局改造：`paths.ts` 新增 `contestRawDir` / `tempDir` / `mainSource(pid)`；比赛目录移到 workspace 根；题目目录改字母命名；列表缓存迁至 `.vsoj/lists/`；`layoutVersion: 2` | 重写后的 `test:cache` 全绿 |
-| **S5.1** | `src/workspace/initializer.ts`：`ensureProblem` / `initializeContest`，依赖注入（fetcher / store / paths / progress / isCancelled），失败汇总，最小 C++ 骨架 | 新增 `test/init.test.js` |
-| **S5.2** | 工作区守卫：未打开文件夹的检测、提醒（带「打开文件夹」按钮）、只读降级、**提交阻断** | 新增 `test/workspace-guard.test.js` |
-| **S5.3** | 侧边栏「初始化项目」条目：「初始化 / 暂不（本次会话隐藏）」、`oj.project.initEntryVisible`、无文件夹占位项 | 断言条目的决策函数 |
-| **S5.4** | 懒初始化接入 `oj.showProblem`：确保文件 → 打开 `main.cpp`（Column One）→ 题目面板（Column Two，已存在） | `test:init` + 手工验证分栏 |
-| **S5.5** | 配置项 + 清理缓存语义按 §4 表更新 | `test:cache` 清理用例 |
-| **S5.6** | 真实站点冒烟扩展：懒初始化单题 → 全量初始化整个比赛 → 校验目录树 → 离线重进 → 清理后 `main.cpp` 仍在 | `npm run smoke:site` |
-| **S5.7** | 文档收口（README / PROGRESS / ARCHITECTURE） | — |
+| 阶段 | 内容 | 可独立验证 | 状态 |
+|---|---|---|---|
+| **S5.0** | 布局改造：`paths.ts` 新增 `contestRawDir` / `tempDir` / `mainSource(pid)`；比赛目录移到 workspace 根；题目目录改字母命名；列表缓存迁至 `.vsoj/lists/`；`layoutVersion: 2` | 重写后的 `test:cache` 全绿 | ✅ 91 项 |
+| **S5.1** | `src/workspace/initializer.ts`：`ensureProblem` / `initializeContest`，依赖注入（fetcher / store / paths / progress / isCancelled），失败汇总，最小 C++ 骨架 | 新增 `test/init.test.js` | ✅ 83 项 |
+| **S5.2** | 工作区守卫：未打开文件夹的检测、提醒（带「打开文件夹」按钮）、只读降级、**提交阻断** | 新增 `test/workspace-guard.test.js` | ✅ 65 项 |
+| **S5.3** | 侧边栏「初始化项目」条目：「初始化 / 暂不（本次会话隐藏）」、`oj.project.initEntryVisible`、无文件夹占位项 | 断言条目的决策函数 | ✅ 35 项 |
+| **S5.4** | 懒初始化接入 `oj.showProblem`：确保文件 → 打开 `main.cpp`（Column One）→ 题目面板（Column Two，已存在） | `test:opensource` + 手工验证分栏 | ✅ 11 项 |
+| **S5.5** | 配置项 + 清理缓存语义按 §4 表更新 | `test:config` 一致性 + `test:cache` 清理用例 | ✅ 11 项 |
+| **S5.6** | 真实站点冒烟扩展：懒初始化单题 → 全量初始化整个比赛 → 校验目录树 → 离线重进 → 清理后 `main.cpp` 仍在 | `npm run smoke:site` | ✅ 84 项 |
+| **S5.7** | 文档收口（README / PROGRESS / ARCHITECTURE） | — | ✅ |
 
 ---
 
