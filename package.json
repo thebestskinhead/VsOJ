@@ -409,7 +409,8 @@
     "test:revalidate": "npm run compile && node test/revalidate.test.js",
     "test:refresh": "npm run compile && node test/refresh.test.js",
     "smoke:site": "npm run compile && node scripts/smoke-site.js",
-    "test:localize": "npm run compile && node test/localize.test.js"
+    "test:localize": "npm run compile && node test/localize.test.js",
+    "test:init": "npm run compile && node test/init.test.js"
   },
   "devDependencies": {
     "@types/cheerio": "^0.22.35",

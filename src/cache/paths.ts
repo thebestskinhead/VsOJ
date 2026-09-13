@@ -1,6 +1,12 @@
 import * as vscode from 'vscode';
 import * as nodePath from 'path';
 import { getWorkspaceRootName, getBaseUrl } from '../utils/config';
+import {
+  slugify, sanitizePid, contestDirName, problemDirName, assetFileName,
+} from '../utils/slug';
+
+// 命名规则集中在 `utils/slug.ts`（纯函数，不依赖 VS Code），此处再导出以保持既有调用点
+export { slugify, sanitizePid, contestDirName, problemDirName, assetFileName };
 
 /**
  * 【缓存层 · 路径】
@@ -58,63 +64,6 @@ export const LAYOUT_VERSION = 2;
 
 /** 默认源文件名（可通过 `oj.project.sourceFileName` 修改） */
 export const DEFAULT_SOURCE_FILE = 'main.cpp';
-
-/** 题目 ID 目录名（仅在缺少 `meta.json` 映射时的兜底；数字原样保留） */
-export function sanitizePid(pid: string): string {
-  const p = (pid || '').trim();
-  if (/^\d+$/.test(p)) { return p; }
-  return slugify(p, 24) || '0';
-}
-
-/** 文件名安全化：去掉文件系统非法字符，压缩空白为 `-`，保留中英文可读性 */
-export function slugify(text: string, maxLen: number = 40): string {
-  const s = (text || '')
-    // eslint-disable-next-line no-control-regex
-    .replace(/[\x00-\x1f<>:"/\\|?*]/g, ' ')
-    .replace(/\s+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^[-.]+|[-.]+$/g, '');
-  return s.length > maxLen ? s.slice(0, maxLen).replace(/-+$/, '') : s;
-}
-
-/** 比赛目录名：`<cid>-<slug>`；标题为空时退化为纯 cid */
-export function contestDirName(cid: string, title?: string): string {
-  const slug = slugify(title || '', 40);
-  return slug ? `${cid}-${slug}` : `${cid}`;
-}
-
-/**
- * 题目目录名：`<题号字母>-<标题slug>`（如 `A-复杂度分析(Ⅰ)`）。
- *
- * 字母由 pid 确定性推导（0→A … 25→Z → 26→AA），因此命名可复现；
- * 标题为空时退化为纯字母。目录名一旦落盘**不再变化**（见 `docs/PROGRESS.md` S1 踩坑）。
- */
-export function problemDirName(letter: string, title?: string): string {
-  const l = slugify(letter || '', 6) || 'P';
-  const slug = slugify(title || '', 40);
-  return slug ? `${l}-${slug}` : l;
-}
-
-/** 稳定的 8 位十六进制哈希（djb2），用于让不同 URL 的同名图片不互相覆盖 */
-function hash8(text: string): string {
-  let h = 5381;
-  for (let i = 0; i < text.length; i++) {
-    h = ((h << 5) + h + text.charCodeAt(i)) >>> 0;
-  }
-  return h.toString(16).padStart(8, '0');
-}
-
-/**
- * 图片资源落盘文件名：`<hash8>-<basename>`。
- *
- * 由 URL **确定性推导**，因此不需要任何映射索引文件 —— 渲染时拿原 URL 即可算出本地文件名。
- */
-export function assetFileName(url: string): string {
-  const clean = (url || '').split('?')[0].split('#')[0];
-  const base = clean.split('/').filter(Boolean).pop() || 'image';
-  const safe = slugify(base, 60) || 'image';
-  return `${hash8(clean)}-${safe}`;
-}
 
 /** 比赛目录内的子路径集合 */
 export interface ContestPaths {
