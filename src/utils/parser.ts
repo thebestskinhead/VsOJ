@@ -1,5 +1,6 @@
 import * as cheerio from 'cheerio';
 import { Contest, ProblemBrief, ProblemDetail, Pagination, StatusRecord, STATUS_CLASS_MAP, ProblemStatus } from '../types';
+import { numToLetter } from './format';
 
 /** HTML 解析器 — 比赛/题目/状态 */
 
@@ -72,6 +73,9 @@ export function parseProblemList(html: string): { title: string; problems: Probl
     if (cells.length < 6) { return; }
 
     const problemId = $(cells[1]).text().trim();
+    // 首格形如 `1722 Problem &nbsp;A` → 提取站点全局题号（与 pid 无算术关系）
+    const globalIdMatch = problemId.match(/^\D*(\d+)/);
+    const globalId = globalIdMatch ? globalIdMatch[1] : undefined;
     const titleLink = $(cells[2]).find('a');
     const probTitle = titleLink.length ? titleLink.text().trim() : $(cells[2]).text().trim();
     const href = titleLink.length ? titleLink.attr('href') || '#' : '#';
@@ -97,6 +101,7 @@ export function parseProblemList(html: string): { title: string; problems: Probl
       pid: currentPid,
       title: probTitle || problemId,
       cid: '',
+      globalId,
       status,
       acceptedCount: accepted,
       submissionCount: submissions,
@@ -281,16 +286,4 @@ export function parseStudentId(html: string): string | null {
     if (/^\d{6,}$/.test(text)) { return text; }
   }
   return null;
-}
-
-/** 数字 PID 转字母编号：0→A, 1→B, ..., 25→Z, 26→AA, ... */
-function numToLetter(n: number): string {
-  if (n < 0) { return '?'; }
-  let s = '';
-  let num = n;
-  do {
-    s = String.fromCharCode(65 + (num % 26)) + s;
-    num = Math.floor(num / 26) - 1;
-  } while (num >= 0);
-  return s;
 }

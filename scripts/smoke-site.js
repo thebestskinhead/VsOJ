@@ -56,12 +56,14 @@ const ok = (label, cond) => check(label, !!cond, true);
   const { parseContestList, parseProblemList, parseProblemDetail } = require('../out/utils/parser.js');
   const { localizeImages } = require('../out/media/localize.js');
   const { problemToMarkdown } = require('../out/utils/problemMarkdown.js');
+  const { numToLetter } = require('../out/utils/format.js');
 
   const context = { globalStorageUri: { fsPath: env.globalStorage } };
   const layout = P.CachePaths.resolve(context);
   const store = new CacheStore(context, layout);
 
-  console.log(`站点: ${BASE} ｜ 缓存根: ${layout.rootDir}\n`);
+  console.log(`站点: ${BASE}`);
+  console.log(`工作区根: ${layout.projectRoot} ｜ 内部数据根: ${layout.rootDir}\n`);
 
   // ---------- 1. 比赛列表页（只读） ----------
   console.log('[1] 比赛列表页 → 解析 + 原样落盘');
@@ -114,13 +116,33 @@ const ok = (label, cond) => check(label, !!cond, true);
   ok('有样例输入', (detail.sampleInput || '').length > 0);
   ok('有样例输出', (detail.sampleOutput || '').length > 0);
 
+  // 登记 pid → 目录名（必须在写文件之前，否则目录会退化成数字 pid）
+  const letter = numToLetter(parseInt(pid, 10));
+  const brief = probList.problems.find(p => p.pid === pid) || probList.problems[0];
+  console.log(`    题号字母: ${letter} ｜ 全局题号: ${brief.globalId ?? '（未解析出）'}`);
+  check('题号字母可由 pid 确定性推导', letter, numToLetter(parseInt(pid, 10)));
+  ok('解析出了全局题号（与 pid 无算术关系）', !!brief.globalId);
+  await store.registerProblem(CID, {
+    pid, letter, globalId: brief.globalId,
+    dir: P.problemDirName(letter, detail.title), title: detail.title,
+  });
+  const cp2 = await store.resolveContestDir(CID);
+  const problemDirBase = path.basename(cp2.problemDir(pid));
+  console.log(`    题目目录: ${problemDirBase}`);
+  ok('题目目录以题号字母开头', problemDirBase.startsWith(`${letter}-`));
+  ok('题目目录含标题 slug', problemDirBase.length > letter.length + 1);
+  ok('题目目录建在比赛目录的 problems/ 下',
+    path.dirname(cp2.problemDir(pid)) === path.join(cp2.dir, 'problems'));
+
   await store.writeProblemHtml(CID, pid, probHtml);
   await store.writeSamples(CID, pid, [{ input: detail.sampleInput, output: detail.sampleOutput }]);
   check('原始 HTML 已落盘', await store.readProblemHtml(CID, pid), probHtml);
   const samples = await store.readSamples(CID, pid);
   check('样例组数', samples.length, 1);
   ok('1.in 内容与解析一致', samples[0].input === detail.sampleInput);
-  check('问题详情 problem.json 不存在', fs.existsSync(path.join(cp.problemDir(pid), 'problem.json')), false);
+  check('问题详情 problem.json 不存在', fs.existsSync(path.join(cp2.problemDir(pid), 'problem.json')), false);
+  check('meta.problems 已登记该题',
+    (await store.readContestMeta(CID)).problems.some(p => p.pid === pid && p.dir === problemDirBase), true);
 
   // 缓存年龄
   const stat = await store.statProblemHtml(CID, pid);
@@ -130,6 +152,19 @@ const ok = (label, cond) => check(label, !!cond, true);
   console.log(`\n[4] 题面图片本地化 cid=${IMG_CID} pid=${IMG_PID}`);
   const imgResp = await http.get('/problem.php', { params: { cid: IMG_CID, pid: IMG_PID } });
   const imgHtml = typeof imgResp.data === 'string' ? imgResp.data : '';
+  const imgDetail = parseProblemDetail(imgHtml);
+  const imgLetter = numToLetter(parseInt(IMG_PID, 10));
+  await store.registerProblem(IMG_CID, {
+    pid: IMG_PID, letter: imgLetter,
+    dir: P.problemDirName(imgLetter, (imgDetail && imgDetail.title) || ''),
+    title: (imgDetail && imgDetail.title) || '',
+  });
+  const cpImg = await store.resolveContestDir(IMG_CID);
+  console.log(`    比赛目录: ${path.basename(cpImg.dir)}`);
+  console.log(`    题目目录: ${path.basename(cpImg.problemDir(IMG_PID))}`);
+  ok('带图题目目录同样以题号字母开头',
+    path.basename(cpImg.problemDir(IMG_PID)).startsWith(`${imgLetter}-`));
+
   let fetched = 0;
   const localized = await localizeImages(imgHtml, {
     readLocal: (url) => store.readProblemAsset(IMG_CID, IMG_PID, url),
@@ -145,6 +180,8 @@ const ok = (label, cond) => check(label, !!cond, true);
   console.log(`    题面图片 ${localized.total} 张 ｜ 内联 ${localized.inlined} ｜ 保留远程 ${localized.remote}`);
   ok('至少识别到 1 张题面图片', localized.total >= 1);
   ok('全部内联为 data URI', localized.inlined === localized.total);
+  ok('图片已落盘到题目 assets/', fs.existsSync(cpImg.problemAssetsDir(IMG_PID))
+    && fs.readdirSync(cpImg.problemAssetsDir(IMG_PID)).length >= 1);
 
   // 第二次应全部命中本地，零网络
   let fetched2 = 0;
@@ -172,16 +209,26 @@ const ok = (label, cond) => check(label, !!cond, true);
   ok('离线时题目页可读', (await store.readProblemHtml(CID, pid, { allowStale: true })) !== undefined);
 
   // ---------- 6. 清理语义 ----------
-  console.log('\n[6] 清理缓存：保留 meta / code / test');
-  await store.ensureDir(cp.codeDir(pid));
-  fs.writeFileSync(path.join(cp.codeDir(pid), 'main.cpp'), 'int main(){}');
+  console.log('\n[6] 清理缓存：删站点数据 + temp/，保留 main.cpp / test/ / meta');
+  await store.ensureDir(cp2.tempDir(pid));
+  await store.ensureDir(cp2.testDir(pid));
+  await store.writeUserFile(cp2.mainSource(pid), 'int main(){}');
+  fs.writeFileSync(path.join(cp2.tempDir(pid), 'a.exe'), 'MZ');
+  fs.writeFileSync(cp2.testResult(pid), '{"ok":true}');
   const before = (await store.listCachedContests()).find(c => c.cid === CID);
   console.log(`    缓存体积: 站点数据 ${before.dataBytes} B ｜ 用户产物 ${before.userBytes} B`);
+  ok('体积统计识别到用户产物', before.userBytes > 0);
   await store.purgeContestData(CID);
-  ok('题目 raw/ 已删除', !fs.existsSync(cp.problemRawDir(pid)));
-  ok('样例已删除', !fs.existsSync(cp.samplesDir(pid)));
-  ok('code/ 保留', fs.existsSync(path.join(cp.codeDir(pid), 'main.cpp')));
-  ok('meta.json 保留', fs.existsSync(cp.meta));
+  ok('contest-raw/ 已删除', !fs.existsSync(cp2.contestRawDir));
+  ok('题目 raw/ 已删除', !fs.existsSync(cp2.problemRawDir(pid)));
+  ok('样例已删除', !fs.existsSync(cp2.samplesDir(pid)));
+  ok('temp/ 已删除', !fs.existsSync(cp2.tempDir(pid)));
+  ok('main.cpp 保留', fs.existsSync(cp2.mainSource(pid)));
+  ok('test/ 保留', fs.existsSync(cp2.testResult(pid)));
+  ok('meta.json 保留', fs.existsSync(cp2.meta));
+  check('清理后仍能定位目录', !!(await store.resolveContestDir(CID)), true);
+  check('清理后题目目录名不变',
+    path.basename((await store.resolveContestDir(CID)).problemDir(pid)), problemDirBase);
 
   // ---------- 7. AI 可读形态 ----------
   console.log('\n[7] 题面 Markdown 生成（不落盘，按需生成）');
@@ -191,7 +238,7 @@ const ok = (label, cond) => check(label, !!cond, true);
   ok('含样例小节', md.includes('## 样例输入'));
 
   // 目录树
-  console.log('\n[8] 生成的目录结构');
+  console.log('\n[8] 生成的目录结构（工作区根视角）');
   const tree = [];
   const walk = (dir, prefix = '') => {
     let entries = [];
@@ -203,10 +250,17 @@ const ok = (label, cond) => check(label, !!cond, true);
       if (e.isDirectory()) { walk(path.join(dir, e.name), `${prefix}${last ? '    ' : '│   '}`); }
     });
   };
-  walk(layout.rootDir);
+  walk(layout.projectRoot);
   console.log(tree.map(l => `    ${l}`).join('\n'));
 
-  console.log(`\n缓存根（可查看）: ${layout.rootDir}`);
+  // 布局契约：比赛项目文件夹必须是**可见**的（不在 .vsoj 里）
+  const visible = fs.readdirSync(layout.projectRoot).filter(n => !n.startsWith('.'));
+  console.log(`\n    可见的比赛项目文件夹: ${JSON.stringify(visible)}`);
+  ok('比赛项目文件夹建在工作区根下（可见）', visible.length >= 2);
+  ok('内部数据根隐藏在工作区根下', fs.existsSync(path.join(layout.projectRoot, '.vsoj')));
+
+  console.log(`\n工作区（可查看）: ${layout.projectRoot}`);
+  console.log(`内部数据根: ${layout.rootDir}`);
   console.log(failures === 0
     ? `\n✅ 真实站点冒烟全部通过`
     : `\n❌ ${failures} 项失败`);

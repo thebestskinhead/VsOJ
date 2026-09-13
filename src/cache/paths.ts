@@ -5,8 +5,8 @@ import { getWorkspaceRootName, getBaseUrl } from '../utils/config';
 /**
  * 【缓存层 · 路径】
  *
- * 唯一负责「缓存产物放在哪、叫什么名字」的模块。
- * 其它任何层（api / views / webview / mcp / test）都不允许自行拼接缓存路径。
+ * 唯一负责「产物放在哪、叫什么名字」的模块。
+ * 其它任何层（api / views / webview / mcp / test）都不允许自行拼接路径。
  *
  * ## 缓存内容原则（重要，勿违背）
  *
@@ -21,29 +21,45 @@ import { getWorkspaceRootName, getBaseUrl } from '../utils/config';
  * 这样做的收益：站点改版或解析逻辑升级后，**已缓存内容立刻受益**，无需等缓存过期；
  * 也不会出现「缓存里的结构化字段与当前解析逻辑不一致」这种脏数据。
  *
- * 唯一例外是 `meta.json` —— 它是插件自身的元信息（cid / 标题 / baseUrl / 时间戳），
+ * 唯一例外是 `meta.json` —— 它是插件自身的元信息（cid / 标题 / 题目索引 / 时间戳），
  * 不是站点内容的拆解产物，必须保留。
  *
- * ## 布局
+ * ## 布局（layoutVersion = 2）
  *
- *   <workspaceFolder>/<root>/                        ← 工作区级（可被外部工具 / AI / git 直接消费）
- *   ├── README.md                                    布局说明（首次初始化写入）
- *   └── contests/
- *       ├── list-p<页码>[-kw<关键词>].html           比赛列表页原始 HTML
- *       └── <cid>-<slug>/                            每场比赛一个目录
- *           ├── meta.json                            插件元信息（非站点内容）
- *           ├── raw/
- *           │   ├── contest.html                     比赛页原始 HTML（题目列表来源）
- *           │   └── status.html                      状态页原始 HTML
- *           ├── problems/<pid>/
- *           │   ├── raw/page.html                    题目页原始 HTML
- *           │   ├── assets/<hash>-<name>.<ext>       题面图片原始二进制
- *           │   └── samples/1.in, 1.out              原始样例文本
- *           ├── code/                                用户代码 / 编译产物（清理缓存时保留）
- *           └── test/                                本地测试产物（清理缓存时保留）
+ * 「比赛项目文件夹」直接建在**工作区根目录下、可见**，便于当作普通项目打开、
+ * 导出、打包、纳入 git；插件的内部数据（比赛列表缓存）留在隐藏的 `.vsoj/` 里。
+ *
+ *   <workspaceFolder>/
+ *   ├── <oj.workspace.root>/                       内部数据根（默认 .vsoj，隐藏）
+ *   │   ├── README.md                              布局说明（首次初始化写入）
+ *   │   └── lists/list-p<页码>[-kw<词>].html       比赛列表页原始 HTML
+ *   └── <cid>-<标题slug>/                           比赛项目文件夹（可见）
+ *       ├── meta.json                              插件元信息（唯一非站点内容）
+ *       ├── contest-raw/
+ *       │   ├── contest.html                       比赛页原始 HTML（题目列表来源）
+ *       │   └── status.html                        状态页原始 HTML
+ *       └── problems/<题号字母>-<标题slug>/
+ *           ├── raw/page.html                      题目页原始 HTML
+ *           ├── assets/<hash>-<name>.<ext>         题面图片原始二进制
+ *           ├── samples/1.in, 1.out                原始样例文本
+ *           ├── <源文件名>                          用户源码（默认 main.cpp）
+ *           ├── test/result.json, report.md        本地测试产物
+ *           └── temp/                              编译产物 + 运行临时文件
+ *
+ * ## 清理语义
+ *
+ * 清理缓存删除「可重新获取」的部分，保留「不可再生」的部分：
+ *   删除 → contest-raw/、raw/、assets/、samples/、temp/
+ *   保留 → meta.json、<源文件名>、test/
  */
 
-/** 题目 ID 目录名（pid 为数字字符串，保持原样；非数字时做 slug 化） */
+/** 布局版本。改动目录结构时递增，便于识别历史遗留目录。 */
+export const LAYOUT_VERSION = 2;
+
+/** 默认源文件名（可通过 `oj.project.sourceFileName` 修改） */
+export const DEFAULT_SOURCE_FILE = 'main.cpp';
+
+/** 题目 ID 目录名（仅在缺少 `meta.json` 映射时的兜底；数字原样保留） */
 export function sanitizePid(pid: string): string {
   const p = (pid || '').trim();
   if (/^\d+$/.test(p)) { return p; }
@@ -65,6 +81,18 @@ export function slugify(text: string, maxLen: number = 40): string {
 export function contestDirName(cid: string, title?: string): string {
   const slug = slugify(title || '', 40);
   return slug ? `${cid}-${slug}` : `${cid}`;
+}
+
+/**
+ * 题目目录名：`<题号字母>-<标题slug>`（如 `A-复杂度分析(Ⅰ)`）。
+ *
+ * 字母由 pid 确定性推导（0→A … 25→Z → 26→AA），因此命名可复现；
+ * 标题为空时退化为纯字母。目录名一旦落盘**不再变化**（见 `docs/PROGRESS.md` S1 踩坑）。
+ */
+export function problemDirName(letter: string, title?: string): string {
+  const l = slugify(letter || '', 6) || 'P';
+  const slug = slugify(title || '', 40);
+  return slug ? `${l}-${slug}` : l;
 }
 
 /** 稳定的 8 位十六进制哈希（djb2），用于让不同 URL 的同名图片不互相覆盖 */
@@ -92,10 +120,12 @@ export function assetFileName(url: string): string {
 export interface ContestPaths {
   /** 比赛目录绝对路径 */
   dir: string;
+  /** 该目录所用的布局版本（写入 meta.json，便于识别历史遗留目录） */
+  layoutVersion: number;
   /** 插件元信息（唯一保留的非站点内容） */
   meta: string;
-  /** 原始响应目录 */
-  rawDir: string;
+  /** 比赛级原始响应目录 */
+  contestRawDir: string;
   /** 比赛页原始 HTML（题目列表来源） */
   contestHtml: string;
   /** 状态页原始 HTML */
@@ -110,8 +140,10 @@ export interface ContestPaths {
   problemAssetsDir(pid: string): string;
   /** 原始样例数据集目录 */
   samplesDir(pid: string): string;
-  /** 用户代码 / 编译产物（清理缓存时保留） */
-  codeDir(pid: string): string;
+  /** 用户源文件路径（清理缓存时保留，已存在则永不覆盖） */
+  mainSource(pid: string, fileName?: string): string;
+  /** 编译产物 + 运行临时文件目录（清理缓存时删除） */
+  tempDir(pid: string): string;
   /** 本地测试产物目录（清理缓存时保留） */
   testDir(pid: string): string;
   /** 本地测试结果文件 */
@@ -120,59 +152,97 @@ export interface ContestPaths {
   testReport(pid: string): string;
 }
 
-/** 缓存根路径解析与布局计算 */
+/** 路径解析与布局计算 */
 export class CachePaths {
-  /** 缓存根目录绝对路径 */
+  /** 比赛项目文件夹的父目录（工作区根） */
+  public readonly projectRoot: string;
+  /** 内部数据根（比赛列表缓存等） */
   public readonly rootDir: string;
   /** 是否为工作区级（true）/ 全局兜底（false） */
   public readonly inWorkspace: boolean;
 
-  private constructor(rootDir: string, inWorkspace: boolean) {
+  private constructor(projectRoot: string, rootDir: string, inWorkspace: boolean) {
+    this.projectRoot = projectRoot;
     this.rootDir = rootDir;
     this.inWorkspace = inWorkspace;
   }
 
   /**
-   * 解析缓存根：
-   * 1) 有 `file:` 工作区 → `<workspaceFolder>/<oj.workspace.root>`
-   * 2) 无工作区（或非 file scheme）→ `<globalStorage>/cache`
+   * 解析路径根：
+   * 1) 有 `file:` 工作区 → projectRoot = 工作区根，rootDir = `<工作区根>/<oj.workspace.root>`
+   * 2) 无工作区（或非 file scheme）→ 全部退化到 `<globalStorage>` 下
    *
    * 之所以坚持真实 OS 路径而非 `workspace.fs` 虚拟路径：
-   * 缓存的消费者包含 MCP / AI / 外部本地测试脚本，它们需要真实路径。
+   * 消费者包含 MCP / AI / 外部本地测试脚本，它们需要真实路径。
+   *
+   * 注：真实使用中「无工作区」由 `workspace/guard.ts` 拦截（用户必须先打开文件夹）；
+   * 这里的兜底主要服务于脱离 VS Code 的自动化测试。
    */
   public static resolve(context: vscode.ExtensionContext): CachePaths {
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (folder && folder.uri.scheme === 'file') {
-      const rootName = getWorkspaceRootName();
-      return new CachePaths(nodePath.join(folder.uri.fsPath, rootName), true);
+      const projectRoot = folder.uri.fsPath;
+      return new CachePaths(
+        projectRoot,
+        nodePath.join(projectRoot, getWorkspaceRootName()),
+        true,
+      );
     }
-    return new CachePaths(nodePath.join(context.globalStorageUri.fsPath, 'cache'), false);
+    const base = context.globalStorageUri.fsPath;
+    return new CachePaths(nodePath.join(base, 'project'), nodePath.join(base, 'cache'), false);
+  }
+
+  /** 内部数据根的布局说明文件 */
+  public get readme(): string {
+    return nodePath.join(this.rootDir, 'README.md');
+  }
+
+  /** 比赛列表缓存目录 */
+  public get listDir(): string {
+    return nodePath.join(this.rootDir, 'lists');
   }
 
   /** 比赛列表缓存文件（按页与关键词分片）— 存原始 HTML */
   public contestListFile(page: number, keyword?: string): string {
     const kw = keyword ? `-kw${slugify(keyword, 24) || 'x'}` : '';
-    return nodePath.join(this.rootDir, 'contests', `list-p${page}${kw}.html`);
+    return nodePath.join(this.listDir, `list-p${page}${kw}.html`);
   }
 
-  /** 比赛目录路径集合 */
-  public contest(cid: string, title?: string): ContestPaths {
-    const dir = nodePath.join(this.rootDir, 'contests', contestDirName(cid, title));
-    const problemDir = (pid: string) => nodePath.join(dir, 'problems', sanitizePid(pid));
+  /**
+   * 比赛目录路径集合。
+   *
+   * @param problemDirs pid → 题目目录名 的映射（来自 `meta.json`）。
+   *        传入后才能把 `problemDir(pid)` 解析到 `<字母>-<标题>` 形式；
+   *        缺失时退化为 `<pid>`（只应在尚未初始化的场景出现）。
+   */
+  public contest(cid: string, title?: string, problemDirs?: Record<string, string>): ContestPaths {
+    return this.contestAt(nodePath.join(this.projectRoot, contestDirName(cid, title)), problemDirs);
+  }
+
+  /** 由已知的目录绝对路径构造（磁盘兜底场景复用同一套子路径规则） */
+  public contestAt(dir: string, problemDirs?: Record<string, string>): ContestPaths {
+    const nameOf = (pid: string) => problemDirs?.[pid] ?? sanitizePid(pid);
+    const problemDir = (pid: string) => nodePath.join(dir, 'problems', nameOf(pid));
     const problemRawDir = (pid: string) => nodePath.join(problemDir(pid), 'raw');
+    const tempDir = (pid: string) => nodePath.join(problemDir(pid), 'temp');
     const testDir = (pid: string) => nodePath.join(problemDir(pid), 'test');
+    const contestRawDir = nodePath.join(dir, 'contest-raw');
+
     return {
       dir,
+      layoutVersion: LAYOUT_VERSION,
       meta: nodePath.join(dir, 'meta.json'),
-      rawDir: nodePath.join(dir, 'raw'),
-      contestHtml: nodePath.join(dir, 'raw', 'contest.html'),
-      statusHtml: nodePath.join(dir, 'raw', 'status.html'),
+      contestRawDir,
+      contestHtml: nodePath.join(contestRawDir, 'contest.html'),
+      statusHtml: nodePath.join(contestRawDir, 'status.html'),
       problemDir,
       problemRawDir,
       problemHtml: (pid: string) => nodePath.join(problemRawDir(pid), 'page.html'),
       problemAssetsDir: (pid: string) => nodePath.join(problemDir(pid), 'assets'),
       samplesDir: (pid: string) => nodePath.join(problemDir(pid), 'samples'),
-      codeDir: (pid: string) => nodePath.join(problemDir(pid), 'code'),
+      mainSource: (pid: string, fileName?: string) =>
+        nodePath.join(problemDir(pid), fileName || DEFAULT_SOURCE_FILE),
+      tempDir,
       testDir,
       testResult: (pid: string) => nodePath.join(testDir(pid), 'result.json'),
       testReport: (pid: string) => nodePath.join(testDir(pid), 'report.md'),
@@ -189,6 +259,18 @@ export class CachePaths {
   }
 }
 
+/** 题目条目（`meta.json`）— pid ↔ 目录 的唯一映射来源 */
+export interface ProblemMetaEntry {
+  pid: string;
+  /** 比赛内题号字母（0→A），由 pid 推导 */
+  letter: string;
+  /** 站点上的全局题号（与 pid 无算术关系，仅作展示/追溯） */
+  globalId?: string;
+  /** 题目目录名（`<字母>-<标题slug>`），定稿后不再变化 */
+  dir: string;
+  title: string;
+}
+
 /** 比赛元信息（`meta.json`） */
 export interface ContestMeta {
   cid: string;
@@ -198,8 +280,12 @@ export interface ContestMeta {
   createdAt: string;
   /** 最近一次同步时间 */
   lastSyncAt: string;
+  /** 布局版本；缺失视为 1（S4 及更早） */
+  layoutVersion?: number;
   /** 题目数量（最近一次同步结果） */
   problemCount?: number;
+  /** 题目索引：pid → 目录名 的唯一映射来源 */
+  problems?: ProblemMetaEntry[];
   /**
    * 目录名尚未定稿（创建时还没有标题，目录名为纯 cid）。
    * 后续拿到真实标题时由 `finalizeContestTitle` 重命名为 `<cid>-<slug>` 并清除此标记。
@@ -209,8 +295,9 @@ export interface ContestMeta {
 
 /** 缓存索引（全局，记录 cid → 相对路径，避免把本机绝对路径写进工作区） */
 export interface CacheIndex {
-  version: 1;
+  version: 2;
   contests: Record<string, {
+    /** 相对 `projectRoot` 的路径 */
     dir: string;
     title: string;
     lastSyncAt: string;

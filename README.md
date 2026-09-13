@@ -96,39 +96,47 @@ OJ 的题目页 `problem.php` 对**公开比赛**不校验登录，所以登录�
 
 若中途关闭了 VS Code，任务会保留 30 分钟，可随时执行 `OJ: 恢复待提交任务` 手动恢复。
 
-## 本地缓存
+## 本地缓存与比赛项目
 
-缓存写入工作区的 `oj.workspace.root` 目录（默认 `.vsoj/`），可被外部工具与 AI 直接读取：
+插件把数据分成**两处**存放：
+
+- **比赛项目文件夹** —— 建在**工作区根目录下、可见**，形如 `<cid>-<比赛标题>/`，
+  可以当作普通项目打开、导出、打包或纳入 git
+- **内部数据根** —— `oj.workspace.root`（默认 `.vsoj/`，隐藏），只放没有比赛归属的
+  内部数据（如比赛列表缓存）
 
 缓存**只存原始信息**：题面 HTML、图片二进制、样例文本。结构化数据（题目详情、题目列表、
 提交状态）由解析层按需产出，**不落盘**，避免解析口径变更后留下脏数据。
 
 ```
-.vsoj/
-├── contests/list-p<页码>[-kw<关键词>].html   比赛列表原始 HTML
-└── contests/<cid>-<比赛标题>/
-    ├── meta.json                        比赛元信息（唯一的非站点文件）
-    ├── raw/contest.html                 比赛页原始 HTML
-    ├── raw/status.html                  提交状态原始 HTML
-    └── problems/<pid>/
-        ├── raw/page.html                题目页原始 HTML（题面的唯一来源）
-        ├── assets/<hash>-<文件名>.<ext>  题面图片二进制
-        ├── samples/1.in, 1.out          样例数据集
-        ├── code/                        用户代码 / 编译产物
-        └── test/result.json, report.md  本地测试结果（S6 产出）
+<workspace>/
+├── .vsoj/                                      内部数据根（隐藏）
+│   └── lists/list-p<页码>[-kw<词>].html        比赛列表原始 HTML
+└── <cid>-<比赛标题>/                            比赛项目文件夹（可见）
+    ├── meta.json                               项目元信息（唯一的非站点文件）
+    ├── contest-raw/contest.html                比赛页原始 HTML（题目列表来源）
+    ├── contest-raw/status.html                 提交状态原始 HTML
+    └── problems/<题号字母>-<标题>/
+        ├── raw/page.html                       题目页原始 HTML（题面的唯一来源）
+        ├── assets/<hash>-<文件名>.<ext>        题面图片二进制
+        ├── samples/1.in, 1.out                 样例数据集
+        ├── main.cpp                            你的源码（清理缓存时保留）
+        ├── temp/                               编译产物与运行临时文件
+        └── test/result.json, report.md         本地测试结果（S6 产出）
 ```
 
-- 可安全删除，插件会自动重建
-- 插件**不会**修改你的 `.gitignore`；如需忽略该目录请自行添加
-- 缓存目录名在首次创建时确定；若创建时尚无比赛标题，会先用纯 `cid` 命名，
-  拿到标题后自动重命名为 `<cid>-<标题>`（只发生一次）
+- **目录名一旦确定不再变化**：比赛目录为 `<cid>-<标题>`，题目目录为
+  `<题号字母>-<标题>`（字母由比赛内 `pid` 确定性推导，`0→A`）。站点标题后来改了也
+  **不重命名**，映射关系以 `meta.json.problems` 为准
+- **清理缓存**只删除可重新获取的部分与 `temp/`，**保留** `main.cpp`、`test/` 与 `meta.json`
+- 插件**不会**修改你的 `.gitignore`；如需忽略缓存请自行添加
 
 ## 开发与测试
 
 ```bash
 npm install
 npm run compile      # 编译
-npm test             # 编译 + 运行全部测试（281 项断言，无需 VS Code 运行时）
+npm test             # 编译 + 运行全部测试（315 项断言，无需 VS Code 运行时）
 npm run smoke:site   # 真实站点端到端冒烟（需要能访问目标 OJ）
 npm run test:cache   # 仅缓存层
 npm run test:session # 仅会话层

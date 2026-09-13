@@ -16,6 +16,14 @@ export interface ProblemBrief {
   pid: string;
   title: string;
   cid: string;
+  /**
+   * 站点上的**全局题号**（如 `1722`）。
+   *
+   * 与 `pid` **没有算术关系**：`pid` 是比赛内 0 起序号，全局题号是题库编号，
+   * 二者独立。目录命名只用 `pid`（推导题号字母），全局题号仅作展示 / 追溯，
+   * 会写进 `meta.json.problems[].globalId`。
+   */
+  globalId?: string;
   /** 提交状态: accepted=已AC, wrong=提交过但未AC, pending=未提交 */
   status: ProblemStatus;
   acceptedCount?: string;

@@ -29,7 +29,7 @@ import { ConnectivityProbe } from './session/connectivity';
 import { SessionGuard, needsRelogin, PendingIntent, classifyThrown } from './session/guard';
 import { SessionKeeper } from './session/keeper';
 import { parseProblemList } from './utils/parser';
-import { formatBytes } from './utils/format';
+import { formatBytes, numToLetter } from './utils/format';
 
 /** 插件激活入口 */
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -862,7 +862,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const sec = (ms: number) => (ms < 0 ? '永不过期' : `${Math.round(ms / 1000)}s`);
 
       const detail = [
-        `缓存根：${layout.rootDir}${layout.inWorkspace ? '' : '（全局兜底：当前无工作区）'}`,
+        `工作区：${layout.projectRoot}${layout.inWorkspace ? '' : '（全局兜底：当前无工作区）'}`,
+        `内部数据根：${layout.rootDir}`,
+        `比赛项目文件夹：建在工作区根下（可见），共 ${list.length} 个`,
         `开关：cache.enabled=${isCacheEnabled()} ｜ cache.offline=${isOfflineMode()}`,
         `TTL：同步读 ${sec(getCacheTtlMs())} ｜ 异步刷 ${sec(getStaleTtlMs())}`,
         `已缓存比赛：${list.length} 场（站点数据 ${formatBytes(dataBytes)} ｜ 用户产物 ${formatBytes(userBytes)}）`,
@@ -884,7 +886,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     })
   );
 
-  // oj.cache.purge — 清理缓存（契约：多选清理 + 全部清空；保留 code/ 与 test/）
+  // oj.cache.purge — 清理缓存（契约：多选清理 + 全部清空；保留源码、test/ 与 meta.json）
   context.subscriptions.push(
     vscode.commands.registerCommand('oj.cache.purge', async () => {
       const list = await cache.listCachedContests();
@@ -904,14 +906,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       items.push({
         label: '$(trash) 清空全部比赛的缓存',
         description: `合计 ${formatBytes(list.reduce((a, c) => a + c.dataBytes, 0))}`,
-        detail: '仅删除站点原始数据，保留 code/ 与 test/',
+        detail: '仅删除可重新获取的数据，保留源码、test/ 与 meta.json',
         cid: '__ALL__',
       });
 
       const picked = await vscode.window.showQuickPick(items, {
         canPickMany: true,
         title: '清理缓存：选择要清理的比赛',
-        placeHolder: '仅删除站点原始数据（题目页 / 样例 / 图片 / 状态），保留 code/ 与 test/',
+        placeHolder: '删除题面 / 样例 / 图片 / 状态 / 编译产物，保留源码与 test/',
       });
       if (!picked || picked.length === 0) { return; }
 
@@ -923,7 +925,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
       const hit = await vscode.window.showWarningMessage(
         `将清理 ${targets.length} 场比赛的缓存，预计释放 ${formatBytes(bytes)}。\n` +
-        '仅删除站点原始数据，code/（你的代码）与 test/（测试结果）会保留。此操作不可撤销。',
+        '删除：题面、样例、图片、状态、编译产物（temp/）。\n' +
+        '保留：你的源码（main.cpp）、test/（测试结果）与 meta.json。此操作不可撤销。',
         { modal: true },
         '清理',
       );
@@ -1161,14 +1164,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   console.log('[OJ] 插件激活完成');
-}
-
-/** 数字 PID → 字母编号 */
-function numToLetter(n: number): string {
-  if (n < 0) { return '?'; }
-  let s = '', num = n;
-  do { s = String.fromCharCode(65 + (num % 26)) + s; num = Math.floor(num / 26) - 1; } while (num >= 0);
-  return s;
 }
 
 /**
