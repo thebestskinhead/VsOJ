@@ -511,7 +511,7 @@ const CACHE_README = `# VsOJ Pro 本地缓存
 ## 布局
 
 \`\`\`
-contests.json                       比赛列表缓存（按页/关键词分片）
+contests/list-p<页码>[-kw<关键词>].json   比赛列表缓存（按页/关键词分片）
 contests/<cid>-<标题>/
 ├── meta.json                       比赛元信息
 ├── problems.json                   题目列表

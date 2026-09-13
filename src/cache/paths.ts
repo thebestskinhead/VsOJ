@@ -11,7 +11,7 @@ import { getWorkspaceRootName, getBaseUrl } from '../utils/config';
  * 布局：
  *   <workspaceFolder>/<root>/                     ← 工作区级（可被外部工具 / AI / git 直接消费）
  *   ├── README.md                                 布局说明（首次初始化写入）
- *   ├── contests.json                             比赛列表缓存（按页/关键词分片）
+ *   ├── contests/list-p<页码>[-kw<关键词>].json     比赛列表缓存（按页/关键词分片）
  *   └── contests/<cid>-<slug>/                    每场比赛一个目录
  *       ├── meta.json                             cid / title / baseUrl / 时间戳
  *       ├── problems.json                         题目列表

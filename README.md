@@ -102,17 +102,18 @@ OJ 的题目页 `problem.php` 对**公开比赛**不校验登录，所以登录�
 
 ```
 .vsoj/
-├── contests.json                       比赛列表缓存
+├── contests/list-p<页码>[-kw<关键词>].json   比赛列表缓存（按页/关键词分片）
 └── contests/<cid>-<比赛标题>/
     ├── meta.json                       比赛元信息
     ├── problems.json                   题目列表
     ├── status.json                     提交状态缓存
-    ├── assets/                         比赛级资源
+    ├── assets/                         比赛级资源（题面图片等）
     └── problems/<pid>/
         ├── problem.json                结构化题目详情
         ├── problem.md                  题面 Markdown（便于 AI 阅读）
         ├── code/                       用户代码 / 编译产物
-        └── samples/1.in, 1.out ...     样例数据集
+        ├── samples/1.in, 1.out ...     样例数据集
+        └── test/result.json            本地测试结果
 ```
 
 - 可安全删除，插件会自动重建
