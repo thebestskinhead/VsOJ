@@ -351,18 +351,16 @@ Java/Python 不声明该位（它们往中文路径写产物本来就正常，�
 7. **没打开文件夹时**明确拒绝写「工作区」级设置，并给出两条出路（打开文件夹 / 用 `global`），
    而不是等 VS Code 抛一句难懂的话。
 
-**顺带发现的两个死配置**（说明书里如实标出，`unused: true`）
+**一致性断言抓「死配置」**
 
-| 配置项 | 情况 |
-|---|---|
-| `oj.defaultLanguage` | `getDefaultLanguage()` 全项目没有任何调用方，提交页语言是独立选择的 |
-| `oj.autoRefreshStatus` | 自动刷新实际由命令 `oj.toggleStatusAutoRefresh` 控制一个**运行期内存标志**，与该设置无关 |
+`config-manual` 里有一条交叉核对：数每个配置项读取函数的调用次数，只有定义没有调用方的
+即判为未生效（`unused`），说明书必须把它标出来。原有的 `config-consistency` 只在源码里
+找键名字符串，抓不到「有 getter 但没人用」这种 —— 两种检查互补。
+同时把 `src/config/manual.ts` 从这两处源码扫描里排除：说明书会按名字提到配置键与 getter，
+那是文档不是消费，算进去会让检查假通过。
 
-> 这两条都是新加的一致性断言抓出来的：它数「读取函数的调用次数」，
-> 只有定义没有调用方的就判为未生效。原有的 `config-consistency` 只在源码里找键名字符串，
-> 抓不到「有 getter 但没人用」这种 —— 两种检查互补。
-> 同时把 `src/config/manual.ts` 从这两处源码扫描里排除：说明书会按名字提到配置键与 getter，
-> 那是文档不是消费，算进去会让检查假通过。
+当前没有未生效项：`oj.defaultLanguage`（提交页语言由源文件扩展名决定）与
+`oj.autoRefreshStatus`（自动刷新由命令 `oj.toggleStatusAutoRefresh` 控制）都已从声明里去掉。
 
 ---
 

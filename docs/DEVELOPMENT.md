@@ -8,7 +8,7 @@
 ```bash
 npm install
 npm run compile      # 编译
-npm test             # 编译 + 运行全部测试（25 套件 / 1298 项断言，无需 VS Code 运行时）
+npm test             # 编译 + 运行全部测试（25 套件 / 1297 项断言，无需 VS Code 运行时）
 npm run smoke:site   # 真实站点端到端冒烟（需要能访问目标 OJ）
 npm run test:cache   # 仅缓存层（布局 / 新鲜度 / 清理语义）
 npm run test:session # 仅会话层
@@ -77,16 +77,21 @@ VsOJ/
 │   ├── config/               # 配置说明书与 AI 初始化
 │   │   ├── manual.ts         # 配置说明书的字段与语义
 │   │   ├── writer.ts         # 配置写入计划
+│   │   ├── wiring.ts         # 配置工具的扩展侧接线
 │   │   └── tools.ts          # MCP get_config_manual / init_config
 │   ├── workspace/            # 工作区侧装配
 │   │   ├── initializer.ts    # 比赛项目初始化策略
+│   │   ├── guard.ts          # 工作区守卫（无工作区时只读看题）
+│   │   ├── openSource.ts     # 左栏打开源码的复用判定
 │   │   ├── wiring.ts         # 初始化依赖接线
 │   │   └── resources.ts      # 题目本地路径清单（供 MCP 返回）
 │   ├── mcp/                  # 对外层：MCP 服务器与工具
 │   ├── media/                # 题面图片本地化
 │   ├── utils/                # 基础层
 │   │   ├── parser.ts         # 唯一 HTML 解析出口
+│   │   ├── problemMarkdown.ts # 题面 → Markdown
 │   │   ├── format.ts         # 输出转义与字节数格式化
+│   │   ├── slug.ts           # 目录 / 文件名生成规则
 │   │   ├── crypto.ts         # MD5 加密
 │   │   ├── state.ts          # 唯一持久化出口
 │   │   ├── config.ts
@@ -99,20 +104,9 @@ VsOJ/
 分层约定：`api` 不碰 UI，`views`/`webview` 不直接发请求，`parser` 是唯一 HTML 解析口，
 `state` 是唯一持久化口，`cache/paths.ts` 是唯一缓存路径来源。
 
-## 分阶段路线
+## 各阶段能力
 
-功能按阶段增量提交，每个阶段可独立验证：
-
-| 阶段 | 状态 | 内容 |
-|---|---|---|
-| S0 | ✅ | 站点机制分析 + 架构演进路线（`docs/`） |
-| S1 | ✅ | 本地缓存层骨架（`src/cache/paths.ts` + `store.ts`） |
-| S2 | ✅ | 会话保活 + 登录失效自愈（`src/session/`） |
-| S4 | ✅ | 运行期缓存刷新 + 离线预览 + 刷新/清理命令 |
-| S3 | ⏳ | 静态资源层（登录/提交页外置为 `media/`） |
-| S5 | ✅ | 比赛项目初始化（懒初始化 / 全量预取、左代码右题目、无工作区守卫） |
-| S6 | 🔶 | 本地测试引擎（工具链 / 比较器 / 引擎 / 任务 / 本地测试结果页 / 提交结果页 / MCP 三工具）；剩工具链编辑页 |
-| S7 | ✅ | 状态页静态化（自绘结果页取代代理渲染站点 `status.php`） |
+阶段划分、交付物与依赖见 [`ARCHITECTURE.md`](ARCHITECTURE.md) 的「分阶段路线」。
 
 S4 已闭环的能力：缓存只存原始信息（题面 HTML / 图片二进制 / 样例）、侧边栏列表缓存优先、
 题目页缓存优先渲染 + 后台异步刷新（超 15 分钟且网络可达才刷新）、图片本地化（离线可看图）、

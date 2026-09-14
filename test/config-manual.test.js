@@ -62,7 +62,7 @@ console.log('\n[2] 语义完整性');
 console.log('\n[3] 未生效配置项');
 {
   const unused = catalog.entries.filter((e) => e.semantic.unused).map((e) => e.key);
-  ok('至少标出了已知的未生效项', unused.length >= 1);
+  ok('当前没有未生效的配置项', unused.length === 0);
 
   /**
    * 收集 src 下全部 ts 源码（判断某个 getter 有没有调用方）。
@@ -110,8 +110,7 @@ const full = M.renderManual(catalog);
   ok('含 toolchains.json 字段表', full.includes('`asciiSafeOutput`'));
   ok('含命令解析顺序', full.includes('命令是怎么找到的'));
   ok('给出了 init_config 的调用示例', full.includes('"toolchains"') && full.includes('init_config'));
-  ok('含「声明了但当前版本没生效」一节', full.includes('声明了但当前版本没生效'));
-  ok('未生效项被明确点出', full.includes('oj.defaultLanguage'));
+  ok('无未生效项时不出现该小节', !full.includes('声明了但当前版本没生效'));
   ok('不含未渲染的占位符残留', !/undefined|\$\{/.test(full));
 
   // 交叉核对：说明书里的默认值必须与 package.json 一致（防止渲染时取错字段）
@@ -145,7 +144,7 @@ console.log('\n[6] JSON 形态（省 token 的机器可读版）');
   check('分组数与定义一致', json.groups.length, M.CONFIG_GROUPS.length);
   ok('每项都带 summary', json.settings.every((s) => typeof s.summary === 'string' && s.summary));
   ok('必需项被标出', json.settings.some((s) => s.required === true));
-  ok('未生效项被标出', json.settings.some((s) => s.unused === true));
+  ok('没有未生效项', !json.settings.some((s) => s.unused === true));
   ok('工具链字段齐全', json.toolchainFields.length === M.TOOLCHAIN_FIELDS.length);
   ok('序列化不丢字段', JSON.stringify(json).includes('searchDirs'));
 }

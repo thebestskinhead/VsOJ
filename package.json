@@ -51,30 +51,10 @@
           "default": "http://localhost",
           "description": "OJ 平台的 Base URL（例如 http://your-oj-server.com）"
         },
-        "oj.defaultLanguage": {
-          "type": "string",
-          "default": "cpp",
-          "enum": [
-            "c",
-            "cpp",
-            "java"
-          ],
-          "description": "默认编程语言"
-        },
-        "oj.autoRefreshStatus": {
-          "type": "boolean",
-          "default": true,
-          "description": "提交后是否自动刷新状态面板"
-        },
-        "oj.statusRefreshInterval": {
-          "type": "number",
-          "default": 5000,
-          "description": "状态面板自动刷新间隔（毫秒）"
-        },
         "oj.statusPollInterval": {
           "type": "number",
           "default": 800,
-          "markdownDescription": "结果页里「还没判完」那几条的轮询起始间隔（毫秒）。每次轮询后翻倍、封顶 8 秒 —— 与站点状态页自己的做法一致。"
+          "markdownDescription": "提交状态页里「还没判完」那几条的轮询起始间隔（毫秒）。每次轮询后翻倍、封顶 8 秒 —— 与站点状态页自己的做法一致。"
         },
         "oj.statusViewMode": {
           "type": "string",

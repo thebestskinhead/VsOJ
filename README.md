@@ -31,8 +31,7 @@ OJ 在线判题平台 VS Code 插件，让你在 VS Code 内完成全部 OJ 操�
 | `oj.baseUrl` | `http://localhost` | OJ 平台的 Base URL。默认值只是占位符，不改它插件等于没配 |
 | `oj.mcp.enabled` | `false` | 建议配合上面那项一起打开：AI 靠 MCP 通道读题、跑测试、写配置 |
 
-其余 25 项都有合理默认值，按需再调。**注意有 2 项在当前版本不生效**
-（`oj.defaultLanguage`、`oj.autoRefreshStatus`，详见说明书的「声明了但当前版本没生效」一节）。
+其余 24 项都有合理默认值，按需再调。
 
 工具链（本地测试用哪个编译器）不在 VS Code 设置里，而在 `.vsoj/toolchains.json`：
 内置 C/C++、Java、Python 四套，你只需要写**要覆盖的字段**，例如把 g++ 指到你的便携环境：
@@ -62,7 +61,7 @@ OJ 在线判题平台 VS Code 插件，让你在 VS Code 内完成全部 OJ 操�
 | `oj.showProblem` | — | 查看题目详情 |
 | `oj.submit` | `Ctrl+Shift+S` | 提交当前编辑器代码 |
 | `oj.refreshStatus` | — | 查看提交结果（按 `oj.statusViewMode` 决定形态：结果页 / OutputChannel / 外部浏览器） |
-| `oj.toggleStatusAutoRefresh` | — | 开启/停止状态自动刷新（5秒间隔） |
+| `oj.toggleStatusAutoRefresh` | — | 开启/停止状态自动刷新（轮询待判定的提交） |
 | `oj.toggleFavorite` | — | 收藏/取消收藏比赛（右键菜单） |
 | `oj.favoriteContest` | — | 收藏比赛（手动输入 CID） |
 | `oj.prevContestPage` | — | 比赛列表上一页 |

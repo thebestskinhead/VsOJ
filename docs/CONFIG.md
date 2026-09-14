@@ -49,15 +49,12 @@
 
 ## 2. 全部配置项
 
-共 29 项。**结构**（键名 / 类型 / 默认值）由 `package.json` 生成，**语义**（取值 / 示例 / 坑）来自 `src/config/manual.ts`，两者由一致性测试保证不脱节。
+共 26 项。**结构**（键名 / 类型 / 默认值）由 `package.json` 生成，**语义**（取值 / 示例 / 坑）来自 `src/config/manual.ts`，两者由一致性测试保证不脱节。
 
 | 配置项 | 类型 | 默认值 | 用途 | 标记 |
 |---|---|---|---|---|
 | `oj.baseUrl` | string | `"http://localhost"` | OJ 平台的根地址，所有请求的基准 | **必需** |
-| `oj.defaultLanguage` | string | `"cpp"` | 默认提交语言 | ⚠️ 未生效 |
-| `oj.autoRefreshStatus` | boolean | `true` | （声明为）提交后是否自动刷新判题状态 | ⚠️ 未生效 |
-| `oj.statusRefreshInterval` | number | `5000` | 判题状态自动刷新的间隔（毫秒） |  |
-| `oj.statusPollInterval` | number | `800` | 结果页轮询待判定提交的起始间隔（毫秒） |  |
+| `oj.statusPollInterval` | number | `800` | 待判定提交的轮询起始间隔（毫秒） |  |
 | `oj.statusViewMode` | string | `"browser"` | 判题状态在哪里显示 |  |
 | `oj.mcp.enabled` | boolean | `false` | 插件启动时是否自动启动 MCP 服务器 |  |
 | `oj.mcp.port` | number | `9527` | MCP 服务器监听端口 |  |
@@ -99,43 +96,14 @@
 - **设置面板原文**：OJ 平台的 Base URL（例如 http://your-oj-server.com）
 - **读取处**：`getBaseUrl()`
 
-#### `oj.defaultLanguage`
-
-- **用途**：默认提交语言
-- **类型**：`string`｜**默认值**：`"cpp"`｜**可选值**：`c` / `cpp` / `java`
-- ⚠️ **当前版本未生效**：声明了但没有代码消费它
-- **取值**：站点 `submit.php` 的语言名，如 `cpp` / `c` / `java` / `python`
-- ⚠️ **坑**：**当前版本该配置项没有被真正消费**：`getDefaultLanguage()` 没有任何调用方，提交页的语言是独立选择的。设它不会有任何效果，别在它上面花时间。
-- **设置面板原文**：默认编程语言
-- **读取处**：`getDefaultLanguage()`
-
-#### `oj.autoRefreshStatus`
-
-- **用途**：（声明为）提交后是否自动刷新判题状态
-- **类型**：`boolean`｜**默认值**：`true`
-- ⚠️ **当前版本未生效**：声明了但没有代码消费它
-- **说明**：**当前版本该配置项没有被真正消费**：自动刷新实际由命令 `oj.toggleStatusAutoRefresh` 控制一个**运行期内存标志**（`statusPanel.toggleAutoRefresh()`），与这个设置无关。
-- ⚠️ **坑**：设它不会有任何效果。想控制自动刷新请用命令 `oj.toggleStatusAutoRefresh`，它只在本次会话内有效。
-- **设置面板原文**：提交后是否自动刷新状态面板
-- **读取处**：`getAutoRefreshStatus()`
-
-#### `oj.statusRefreshInterval`
-
-- **用途**：判题状态自动刷新的间隔（毫秒）
-- **类型**：`number`｜**默认值**：`5000`
-- **取值**：正整数；站点判题通常需要数秒，低于 1000 意义不大
-- **示例**：`5000`
-- **设置面板原文**：状态面板自动刷新间隔（毫秒）
-- **读取处**：`getStatusRefreshInterval()`
-
 #### `oj.statusPollInterval`
 
-- **用途**：结果页轮询待判定提交的起始间隔（毫秒）
+- **用途**：待判定提交的轮询起始间隔（毫秒）
 - **类型**：`number`｜**默认值**：`800`
 - **取值**：≥ 100 的整数；小于 100 会被忽略并回落 800
-- **说明**：只影响 `oj.statusViewMode = webview`：页面上「等待 / 编译中 / 运行并评判」那几条会按这个间隔去查 `status-ajax.php`，**每次翻倍、封顶 8 秒**。站点自己的状态页用 80ms 起步，那是页面直连同机 OJ 的量级；插件每次都要过一层 HTTP 客户端（可能还套 WebVPN），起点因此宽得多。
+- **说明**：`oj.statusViewMode` 为 `webview` 或 `output` 时都生效：「等待 / 编译中 / 运行并评判」那几条会按这个间隔去查 `status-ajax.php`，**每次翻倍、封顶 8 秒**。站点自己的状态页用 80ms 起步，那是页面直连同机 OJ 的量级；插件每次都要过一层 HTTP 客户端（可能还套 WebVPN），起点因此宽得多。
 - **示例**：`800`
-- **设置面板原文**：结果页里「还没判完」那几条的轮询起始间隔（毫秒）。每次轮询后翻倍、封顶 8 秒 —— 与站点状态页自己的做法一致。
+- **设置面板原文**：提交状态页里「还没判完」那几条的轮询起始间隔（毫秒）。每次轮询后翻倍、封顶 8 秒 —— 与站点状态页自己的做法一致。
 - **读取处**：`getStatusPollInterval()`
 
 #### `oj.statusViewMode`
@@ -143,7 +111,7 @@
 - **用途**：判题状态在哪里显示
 - **类型**：`string`｜**默认值**：`"browser"`｜**可选值**：`output` / `webview` / `browser`
 - **取值**：`browser` 外部浏览器 / `webview` 编辑器内结果页 / `output` 文本表格
-- **说明**：`browser` 打开站点原页面最完整，但会跳出编辑器；`webview` 是插件自绘的结果页，**待判定的提交会在页面里就地轮询刷新**（不整页重载），并且能点开每一条看判题详情；`output` 最轻，适合只想扫一眼结果。
+- **说明**：`browser` 打开站点原页面最完整，但会跳出编辑器；`webview` 是插件自绘的结果页，**待判定的提交会在页面里就地轮询刷新**（不整页重载），并且能点开每一条看判题详情；`output` 是 Output 面板里的文本表格，同样会轮询待判定的提交，只是整屏重绘。
 - ⚠️ **坑**：填了三个之外的值不会报错，会静默按 `browser` 走。
 - **设置面板原文**：提交状态查看模式
 - **读取处**：`getStatusViewMode()`
@@ -471,8 +439,6 @@
 ## 5. 常见坑（都是踩过的）
 
 - **`oj.baseUrl`**：默认值 `http://localhost` 只是占位符，不改它插件等于没配 —— 表现为列表空白、登录页打不开，而不是报错。
-- **`oj.defaultLanguage`**：**当前版本该配置项没有被真正消费**：`getDefaultLanguage()` 没有任何调用方，提交页的语言是独立选择的。设它不会有任何效果，别在它上面花时间。
-- **`oj.autoRefreshStatus`**：设它不会有任何效果。想控制自动刷新请用命令 `oj.toggleStatusAutoRefresh`，它只在本次会话内有效。
 - **`oj.statusViewMode`**：填了三个之外的值不会报错，会静默按 `browser` 走。
 - **`oj.mcp.port`**：端口被占用时启动会失败并提示换端口 —— 那时 AI 客户端的 MCP 配置里也要同步改。
 - **`oj.workspace.root`**：改这里等于换了一个数据根，**旧缓存不会再被读到**（不会迁移）。
@@ -483,10 +449,3 @@
 - **`oj.test.reuseBuild`**：开着它时，改的是**别的文件**（如被 include 的头文件）不会让哈希变化，可能跑到旧产物；调试前想要 100% 新鲜就用「强制重新编译」。
 - **`oj.test.timeoutMs`**：调太小会让正常但偏慢的解法（暴力枚举）频繁被砍，看起来像程序有 bug。
 - **`oj.test.resultPage`**：设成 `never` 不影响判定与产物 —— `result.json` 与 `report.md` 照常写入，只是不再自动开页面。
-
-### 声明了但当前版本没生效
-
-- `oj.defaultLanguage`：默认提交语言
-- `oj.autoRefreshStatus`：（声明为）提交后是否自动刷新判题状态
-
-这些项在设置面板里看得到、改了也没反应。列出来是为了**不让人以为是配置写错了**。

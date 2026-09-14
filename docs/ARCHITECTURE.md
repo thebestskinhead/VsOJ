@@ -3,33 +3,14 @@
 > 配套文档：`docs/SITE_ANALYSIS.md`（目标站点机制）
 > 原则：**按分层扩展，不打补丁**。新增能力一律落在既有分层职责内，禁止在 `extension.ts` 里堆业务逻辑。
 
-## 1. 现有架构（as-is）
+## 1. 分层与职责边界
 
-```
-extension.ts ── 组合根：构造服务 → 注册命令 → 装配 TreeView/Webview/MCP
-   │
-   ├── api/            【网络层】只做「请求 + 交给 parser」
-   │   ├── client.ts     单例 axios + cookieStore(Map) + lockCookies + 调试日志
-   │   ├── auth.ts       登录/登出/会话/CSRF/学号/验证码
-   │   ├── contest.ts    比赛列表、比赛题目列表（含 AccessError）
-   │   ├── problem.ts    题目详情、图片内联、题目 HTML 构建
-   │   └── submit.ts     代码提交、状态查询
-   │
-   ├── utils/          【基础层】
-   │   ├── parser.ts     cheerio HTML → 结构化对象（唯一 HTML 解析出口）
-   │   ├── state.ts      globalState / secrets 封装（配置与凭据）
-   │   ├── config.ts     用户配置读取
-   │   ├── crypto.ts     MD5
-   │   └── debug.ts      调试 OutputChannel
-   │
-   ├── views/          【展示层 ①】TreeView：contestTree / problemTree / statusPanel(OutputChannel)
-   ├── webview/        【展示层 ②】Panel：login / submit / problem / account
-   └── mcp/            【对外层】server(JSON-RPC over HTTP) / tools / logger
-```
+模块清单与目录结构见 [`docs/DEVELOPMENT.md`](DEVELOPMENT.md) 的「项目结构」一节。
 
-**职责边界明确**：`api` 不碰 UI，`views/webview` 不直接发请求，`parser` 是唯一 HTML 解析口，`state` 是唯一持久化口。
+**职责边界明确**：`api` 不碰 UI，`views`/`webview` 不直接发请求，`parser` 是唯一 HTML 解析口，
+`state` 是唯一持久化口，`cache/paths.ts` 是唯一缓存路径来源。
 
-## 2. 现状缺口（gap）— 逐条对应用户诉求
+## 2. 起点时的缺口（gap）— 逐条对应用户诉求
 
 | # | 诉求 | 现状 | 缺口性质 |
 |---|---|---|---|
@@ -167,7 +148,7 @@ extension.ts ── 组合根：构造服务 → 注册命令 → 装配 TreeVie
 | **S0** | 站点机制 + 架构分析 | `docs/SITE_ANALYSIS.md`、`docs/ARCHITECTURE.md` | ✅ |
 | **S1** | 缓存层骨架 | `src/cache/paths.ts`、`src/cache/store.ts`、配置项、`test/cache-layout.test.js` | ✅ |
 | **S2** | 会话保活 + 失效自愈 | `src/session/keeper.ts`、`src/session/guard.ts`、`submit` 错误分类、4 个会话命令、状态栏、`test/session.test.js` | ✅ |
-| **S3** | 静态资源层 | `media/login.html`、`media/submit.html`、`media/common.css`、`media/*.js`，webview 改为 `asWebviewUri` 加载 | 待办 |
+| **S3** | 静态资源层（登录/提交页只调接口、不加载站点页面） | 由插件自绘的登录页 / 提交页达成，不另建 `media/` | ✅ |
 | **S4** | 运行期缓存刷新 + 离线模式 | 详见 `docs/PLAN_S4.md`（契约 / 阶段 / 测试） | ✅ |
 | **S5** | 比赛项目初始化（懒初始化 / 全量预取 / 左代码右题目 / 无工作区守卫） | `src/workspace/initializer.ts`、`guard.ts`、`wiring.ts`、`openSource.ts`；布局 v2；`test/{init,workspace-guard,project-tree,open-source}.test.js` | ✅ |
 | **S6** | 本地测试引擎 + MCP 扩展 | `src/test/*`、`src/config/*`、`src/workspace/resources.ts`、`src/webview/{testResult,status}Webview.ts`；**8 个 MCP 工具**（3 个测试类）；`docs/PLAN_S6.md`（剩工具链编辑页） | 🔶 |
@@ -175,7 +156,7 @@ extension.ts ── 组合根：构造服务 → 注册命令 → 装配 TreeVie
 
 ### 测试与验证
 
-`npm test` 一次性跑完全部套件（**25 套件 / 1298 项断言**），全部脱离 VS Code 运行时
+`npm test` 一次性跑完全部套件（**25 套件 / 1297 项断言**），全部脱离 VS Code 运行时
 （`vscode` 模块桩 + 本地 HTTP 服务器）。**引擎套件不 mock 编译与执行** ——
 用本机真实的 g++ 编译真实源码、跑真实样例、比真实字节
 （找不到编译器时该组用例降级为 skip 并说明，不伪装成通过）。
@@ -194,7 +175,7 @@ extension.ts ── 组合根：构造服务 → 注册命令 → 装配 TreeVie
 | `test-result-page` | 61 | 本地测试结果页：策略表、三种「未能开始」屏、注入转义、零脚本静态检查 |
 | `config-tools` | 54 | 走真实 `McpToolHandler` 的配置说明书与初始化（临时工作区真文件读写） |
 | `compare` | 49 | 严格逐字节比较 + 首个差异定位（行 / 列 / hex） |
-| `config-manual` | 44 | 说明书结构↔语义双向核对（抓死配置、防漂移） |
+| `config-manual` | 43 | 说明书结构↔语义双向核对（抓死配置、防漂移） |
 | `test-wiring` | 44 | 接线层：选工具链、发现样例、拼路径、配置真的生效 |
 | `tasks` | 43 | 自定义 `oj` 任务 + 终端桥（真实 g++ 端到端） |
 | `localize` | 38 | 图片本地化（含 `<a href>` 误伤回归用例） |

@@ -22,6 +22,7 @@
 | S6.6 | 2026-09-14 | **结果页 webview**：两级明细（列表 → 期望/实际/差异）、过期标记、零脚本、全通过不抢焦点 | `npm test` 23 套件；`test:result-page` 61 项 |
 | S6.6.1 | 2026-09-14 | **提交结果页重写**：统一亮色样式 + 待判定行**就地轮询**（对齐站点 `auto_refresh.js`）、可点开判题详情；旧「原样嵌站点页面」下线 | `npm test` 24 套件；`test:status-webview` 136 项 |
 | S6.7 | 2026-09-14 | **MCP 三工具**：`compile_problem` / `run_local_test` / `get_last_test_result`；`get_current_problem` 补 `local` 段（源文件/样例/题面图片/产物的本地绝对路径）。AI 侧「改代码 → 本地验证 → 再改」闭环补上最后一环 | `npm test` 25 套件；`test:mcp-test-tools` 91 项（真实 `McpToolHandler` + 真 g++ 端到端） |
+| S6.7.1 | 2026-09-14 | **配置收敛**：摘掉三个未消费的配置项（`oj.defaultLanguage` / `oj.autoRefreshStatus` / `oj.statusRefreshInterval`）；Output 文本表格的自动刷新改用与结果页**同一套轮询**（`status-ajax` 逐条问待判定的提交、间隔 800ms 起步逐次翻倍封顶 8s），两者共用 `oj.statusPollInterval` | `npm test` 25 套件 / 1297 项断言 |
 
 ---
 
@@ -259,7 +260,7 @@ axios 会自动跟随重定向 —— 而**提交成功后站点同样 302 到 `
    「键名字符串在源码里出现过」，而说明书里每个键都作为引号键名出现 → 会对所有项假通过。
    现已把 `manual.ts` 从扫描里排除（**说明书不是消费方**）。
 
-**顺带抓出两个死配置**（说明书如实标 `unused`，README 也点名）
+**顺带抓出两个死配置**（说明书如实标 `unused`）
 
 | 配置项 | 情况 |
 |---|---|
@@ -552,19 +553,10 @@ MCP 那侧当时只有五个只读与配置类工具，缺的正是最后一环�
     并把题目图片与样例的本地路径并进 `get_current_problem`（不另开读图工具）
   - ⏳ 待做：**S6.8 工具链编辑页 + macOS 内存探测回退 + 文档收口**
   - MCP 工具现状：共 **8 个**（5 个只读/配置类 + 3 个测试工具）。
-- **注意：两个配置项当前不生效** —— `oj.defaultLanguage` 与 `oj.autoRefreshStatus`
-  声明了但没有代码消费（详见 `docs/CONFIG.md` 的「声明了但当前版本没生效」）。
-  要么接上，要么从声明里摘掉，别让它继续误导。
-- **S3 静态资源层** —— 把登录/提交页从 TS 字符串外置到 `media/`，用 `asWebviewUri` 加载。
-  **经复核：尚未落地**（无 `media/` 目录，`asWebviewUri` 零引用）。
+- **状态查看的三个形态**由 `oj.statusViewMode` 决定（结果页 / Output 文本表格 / 外部浏览器），
+  前两者都用 `oj.statusPollInterval` 轮询待判定的提交：只问还没判完的那几条、
+  间隔逐次翻倍封顶 8 秒。
+- **S3 静态资源层** —— 目标是「登录/提交页只调接口、不加载站点页面」，
+  已由插件自绘的登录页 / 提交页达成，不再外置 `media/`。
 - ✅ **S7 状态页静态化** —— 已由 S6.6.1 提前完成：`statusPanel` 里「原样嵌站点页面 +
   链接代理脚本」的做法已下线，改为插件自绘的 `StatusWebview`（`src/webview/statusWebview.ts`）。
-
-## 未验证项（需要账号才能确认）
-
-- 已登录时 `submit.php` 失败（验证码错 / 重复提交）的真实响应形态。
-- 会话在多次 `vcode.php` 请求下的准确超时秒数。
-
-> 这两项不影响现有实现：当前判定以「HTTP 5xx + 空体」「落点为登录页」这些
-> **结构性主信号**为准，字符串信号仅作辅助，且判定集中在 `session/guard.ts` 单点，
-> 便于拿到实测结果后收紧。

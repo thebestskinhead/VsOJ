@@ -11,24 +11,12 @@ export function getBaseUrl(): string {
   return url.replace(/\/+$/, '');
 }
 
-export function getDefaultLanguage(): string {
-  return getConfig().get<string>('defaultLanguage', 'cpp');
-}
-
-export function getAutoRefreshStatus(): boolean {
-  return getConfig().get<boolean>('autoRefreshStatus', true);
-}
-
-export function getStatusRefreshInterval(): number {
-  return getConfig().get<number>('statusRefreshInterval', 5000);
-}
-
 export function getStatusViewMode(): 'output' | 'webview' | 'browser' {
   return getConfig().get<'output' | 'webview' | 'browser'>('statusViewMode', 'browser');
 }
 
 /**
- * 结果页里待判定提交的轮询起始间隔（毫秒）。
+ * 待判定提交的轮询起始间隔（毫秒）—— output 文本表格与 webview 结果页共用。
  *
  * 站点自己的状态页用 80ms 起步、逐次翻倍；那是页面直连同机 OJ 的量级。
  * 我们每次轮询都要过一层扩展的 HTTP 客户端（可能还套着 WebVPN），

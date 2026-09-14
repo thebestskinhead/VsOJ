@@ -1,19 +1,39 @@
 import * as vscode from 'vscode';
-import { SubmitService } from '../api/submit';
+import { SubmitService, StatusAjaxRow } from '../api/submit';
 import { StateManager } from '../utils/state';
 import { StatusRecord } from '../types';
-import { getStatusRefreshInterval } from '../utils/config';
+import { getStatusPollInterval } from '../utils/config';
+import {
+  isPending, resultNameOf, MAX_POLL_MS, MAX_POLL_INTERVAL_MS,
+} from '../webview/statusWebview';
 
-/** 状态面板 — OutputChannel，纯文本框线表格，刷新时替换 */
+/**
+ * 状态面板 — OutputChannel，纯文本框线表格，刷新时替换。
+ *
+ * 自动刷新与结果页取同一套策略（站点 `auto_refresh.js` 的等价物）：只盯**一条**
+ * 还没判完的提交去查 `status-ajax.php`，拿到结果后重绘整屏再扫下一条；间隔从
+ * `oj.statusPollInterval` 起步、逐次翻倍封顶 8 秒，单条超过 `MAX_POLL_MS` 就放弃。
+ * 与结果页的唯一差别在显示：OutputChannel 只能整屏替换，改不了单格。
+ */
+
+const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms));
 
 export class StatusPanel {
   private channel: vscode.OutputChannel;
   private submitService: SubmitService;
   private state: StateManager;
-  private refreshTimer: NodeJS.Timeout | undefined;
   private autoRefreshEnabled: boolean = false;
   private smartStop: boolean = false;
   private filterPid: string = '';
+  /** 当前这一屏的记录（已按 filterPid 过滤） */
+  private records: StatusRecord[] = [];
+  private src: { fromCache?: boolean; offlineNoCache?: boolean } = {};
+  /** 轮询代次：每次重开 / 停止都 +1，让在途的旧循环自己退出 */
+  private pollGen: number = 0;
+  /** 超时放弃的提交，不再重复轮询 */
+  private givenUp = new Set<number>();
+  /** 正在盯的提交（表头提示用） */
+  private watching: number | undefined;
 
   constructor(submitService: SubmitService, state: StateManager) {
     this.submitService = submitService;
@@ -28,7 +48,10 @@ export class StatusPanel {
     await this.loadAndRender();
   }
 
-  async refresh(): Promise<void> { await this.loadAndRender(); }
+  async refresh(): Promise<void> {
+    this.givenUp.clear();
+    await this.loadAndRender();
+  }
 
   /** 手动切换——持续刷新，不自动停，显示全部 */
   toggleAutoRefresh(): void {
@@ -38,41 +61,120 @@ export class StatusPanel {
 
   /**
    * 提交通道——只显示当前题目，开始刷新，最新结果出来后自动停
-   * @param pid 当前题目 PID（数字），用于过滤状态记录
+   * @param pidLetter 当前题目的编号字母（A/B/C…），用于过滤状态记录
    */
-  startSubmitAutoRefresh(pid: string): void {
-    this.filterPid = pid;
+  startSubmitAutoRefresh(pidLetter: string): void {
+    this.filterPid = pidLetter;
     this.smartStop = true;
     this.channel.show(true);
-    if (!this.autoRefreshEnabled) { this.startAutoRefresh(); }
-    else { this.loadAndRender(); }
+    this.startAutoRefresh();
   }
 
-  private async loadAndRender(): Promise<void> {
+  private startAutoRefresh(): void {
+    this.autoRefreshEnabled = true;
+    this.givenUp.clear();
+    void this.runLoop(++this.pollGen);
+  }
+
+  /**
+   * 一轮 = 拉整张状态表 → 逐个盯还没判完的提交 → 都出结果后（持续模式）等下再来一轮。
+   */
+  private async runLoop(gen: number): Promise<void> {
+    const base = Math.max(100, getStatusPollInterval());
+    while (this.autoRefreshEnabled && gen === this.pollGen) {
+      const ok = await this.loadAndRender();
+      if (!ok) { this.stopAutoRefresh(); return; }
+      if (!this.autoRefreshEnabled || gen !== this.pollGen) { return; }
+
+      await this.pollPending(gen);
+      if (!this.autoRefreshEnabled || gen !== this.pollGen) { return; }
+
+      if (this.smartStop) {
+        const latest = this.records[0];
+        const done = !!latest && !isPending(latest.resultCode);
+        this.stopAutoRefresh();
+        if (done) { vscode.window.showInformationMessage('[OJ] 判题结果已出，停止刷新'); }
+        return;
+      }
+      // 持续模式：没有待判定的也继续盯着（用户可能刚又提交了一发）
+      await sleep(base);
+    }
+  }
+
+  /** 逐个盯住还没判完的提交，直到没有了（或都到了放弃线）为止 */
+  private async pollPending(gen: number): Promise<void> {
+    const base = Math.max(100, getStatusPollInterval());
+    for (;;) {
+      if (!this.autoRefreshEnabled || gen !== this.pollGen) { return; }
+      // 提交通道只关心自己刚交的那条，不去等历史遗留的待判定
+      const row = this.smartStop ? this.latestPending() : this.nextPending();
+      if (!row) { this.watching = undefined; this.render(); return; }
+      this.watching = row.submitId;
+      this.render();
+
+      let wait = base;
+      let resolved = false;
+      const startedAt = Date.now();
+      while (this.autoRefreshEnabled && gen === this.pollGen && Date.now() - startedAt < MAX_POLL_MS) {
+        await sleep(wait);
+        if (!this.autoRefreshEnabled || gen !== this.pollGen) { return; }
+        try {
+          const r = await this.submitService.fetchStatusAjax(row.submitId);
+          this.applyAjax(row.submitId, r);
+          this.render();
+          if (!isPending(r.resultCode)) { resolved = true; break; }
+        } catch {
+          // 网络抖动：保持同一节奏继续重试，不打断整条队列
+        }
+        wait = Math.min(wait * 2, MAX_POLL_INTERVAL_MS);
+      }
+      if (!this.autoRefreshEnabled || gen !== this.pollGen) { return; }
+      if (!resolved) { this.givenUp.add(row.submitId); }
+      if (this.smartStop) { this.watching = undefined; return; }
+    }
+  }
+
+  /** 自下而上取第一条还没判完的提交（顺序照搬站点 `auto_refresh()`） */
+  private nextPending(): StatusRecord | undefined {
+    for (let i = this.records.length - 1; i >= 0; i--) {
+      const r = this.records[i];
+      if (isPending(r.resultCode) && !this.givenUp.has(r.submitId)) { return r; }
+    }
+    return undefined;
+  }
+
+  /** 最新一条（列表新的在前）还没判完的提交 */
+  private latestPending(): StatusRecord | undefined {
+    const r = this.records[0];
+    return r && isPending(r.resultCode) && !this.givenUp.has(r.submitId) ? r : undefined;
+  }
+
+  private async loadAndRender(): Promise<boolean> {
     try {
       const cid = this.state.getCurrentCid();
-      if (!cid) { this.replace('  未进入比赛\n'); return; }
+      if (!cid) { this.records = []; this.replace('  未进入比赛\n'); return false; }
       const userId = this.state.getStudentId() || '';
       const res = await this.submitService.queryStatus(userId, cid);
-      let records = res.records;
-
-      // 按题目过滤——只显示当前题目的提交
-      if (this.filterPid) {
-        records = records.filter(r => r.problemId === this.filterPid);
-      }
-
-      this.render(records, { fromCache: res.fromCache, offlineNoCache: res.offlineNoCache });
-
-      // 智能停止：最新提交已出最终结果 → 自动停
-      if (this.autoRefreshEnabled && this.smartStop && records.length > 0) {
-        const latest = records[0];
-        if (latest.resultCode >= 4) {
-          this.stopAutoRefresh();
-          vscode.window.showInformationMessage('[OJ] 判题结果已出，停止刷新');
-        }
-      }
+      this.records = this.filterPid
+        ? res.records.filter(r => r.problemId === this.filterPid)
+        : res.records;
+      this.src = { fromCache: res.fromCache, offlineNoCache: res.offlineNoCache };
+      this.render();
+      return true;
     } catch (e: any) {
       this.replace(`  加载失败: ${e.message}\n`);
+      return false;
+    }
+  }
+
+  /** 一条轮询结果 → 更新记录（下一次 `render()` 会带上） */
+  private applyAjax(submitId: number, r: StatusAjaxRow): void {
+    const rec = this.records.find(x => x.submitId === submitId);
+    if (rec) {
+      rec.resultCode = r.resultCode;
+      rec.resultName = resultNameOf(r.resultCode);
+      rec.memory = r.memory;
+      rec.time = r.time;
     }
   }
 
@@ -89,18 +191,20 @@ export class StatusPanel {
     return shorts[code] || name.substring(0, 4).padEnd(4);
   }
 
-  private render(records: StatusRecord[], src?: { fromCache?: boolean; offlineNoCache?: boolean }): void {
+  private render(): void {
+    const records = this.records;
     const cid = this.state.getCurrentCid() || '-';
     const userId = this.state.getStudentId() || '-';
     const now = new Date().toLocaleString();
-    const intervalSec = Math.round(getStatusRefreshInterval() / 1000);
     const hintParts: string[] = [];
     if (this.filterPid) hintParts.push(`题目:${this.filterPid}`);
-    if (this.autoRefreshEnabled && this.smartStop) hintParts.push('出结果自停');
-    if (this.autoRefreshEnabled && !this.smartStop) hintParts.push(`刷新中 ${intervalSec}s`);
+    if (this.autoRefreshEnabled) {
+      hintParts.push(this.watching ? `自动刷新中 · 提交 ${this.watching}` : '自动刷新中');
+      if (this.smartStop) hintParts.push('出结果自停');
+    }
     // 状态数据的时效性要求高：网络优先，缓存只作降级，因此必须让用户看见数据来源
-    if (src?.offlineNoCache) hintParts.push('离线模式 · 无本地缓存');
-    else if (src?.fromCache) hintParts.push('离线缓存');
+    if (this.src.offlineNoCache) hintParts.push('离线模式 · 无本地缓存');
+    else if (this.src.fromCache) hintParts.push('离线缓存');
     const autoHint = hintParts.length ? ` [${hintParts.join(' | ')}]` : '';
 
     let ac = 0, wa = 0, ce = 0, tle = 0, re = 0;
@@ -163,20 +267,19 @@ export class StatusPanel {
     }
 
     out += bot + '\n\n';
-    this.replace(out);
-  }
 
-  private startAutoRefresh(): void {
-    this.autoRefreshEnabled = true;
-    const interval = getStatusRefreshInterval();
-    this.refreshTimer = setInterval(() => this.loadAndRender(), interval);
-    this.loadAndRender();
+    if (this.givenUp.size) {
+      out += `  已停止等待：${[...this.givenUp].join(', ')}（超过 ${Math.round(MAX_POLL_MS / 60000)} 分钟仍未出结果）\n\n`;
+    }
+
+    this.replace(out);
   }
 
   private stopAutoRefresh(): void {
     this.autoRefreshEnabled = false;
-    if (this.refreshTimer) { clearInterval(this.refreshTimer); this.refreshTimer = undefined; }
-    this.loadAndRender();
+    this.pollGen += 1;
+    this.watching = undefined;
+    this.render();
   }
 
   isAutoRefreshEnabled(): boolean { return this.autoRefreshEnabled; }
@@ -193,7 +296,8 @@ export class StatusPanel {
   }
 
   dispose(): void {
-    this.stopAutoRefresh();
+    this.autoRefreshEnabled = false;
+    this.pollGen += 1;
     this.channel.dispose();
   }
 }
