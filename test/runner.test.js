@@ -239,9 +239,12 @@ if (HAS_GPP) {
   // ── 12. 中文路径（实测坑：MinGW 的 ld 写不出非 ASCII 产物路径） ──────────
   // 本项目布局的目录名含中文是常态（`<cid>-<标题>` / `<字母>-<标题>`），
   // 而现象是「编译失败 + 一堆乱码路径」，非常容易被误判成代码问题。
-  console.log('\n[12] 中文路径下的编译（ASCII 中转）');
+  // 解法：cwd = 题目目录 + 路径参数用相对路径 → 命令行里压根没有非 ASCII 字符。
+  console.log('\n[12] 中文路径下的编译（相对路径）');
   check('纯 ASCII 路径判定', R.isAsciiSafe('C:\\a\\b\\main.exe'), true);
   check('含中文路径判定', R.isAsciiSafe('C:\\3775-新生赛\\A-A+B问题\\main.exe'), false);
+  check('同盘可给出相对路径', R.relativeArg('E:\\a\\b', 'E:\\a\\b\\temp\\main.exe'), 'temp\\main.exe');
+  check('跨盘时相对路径无解（退回中转）', R.relativeArg('E:\\a\\b', 'C:\\x\\main.exe'), undefined);
 
   const cnProblem = path.join(os.tmpdir(), `vsoj-中文-${process.pid}`, '3775-新生赛', 'problems', 'A-A+B问题');
   const cnTemp = path.join(cnProblem, 'temp');
@@ -259,22 +262,33 @@ if (HAS_GPP) {
     inputFile: (i) => path.join(cnSamples, `${i}.in`),
     outputFile: (i) => path.join(cnSamples, `${i}.out`),
   });
-  const rCn = await new R.LocalTestRunner({
+  const cnDeps = {
     toolchain: cppToolchain(),
     resolved: { gpp: GPP },
-    sourceFile: path.join(cnProblem, 'main.cpp'), sourceDir: cnProblem,
+    sourceDir: cnProblem,
     tempDir: cnTemp, resultFile: path.join(cnTest, 'result.json'), reportFile: path.join(cnTest, 'report.md'),
     cases: cnDisc.cases, skipped: cnDisc.skipped,
     meta: { cid: '3775', pid: '0', title: 'A + B Problem' },
+  };
+  const rCn = await new R.LocalTestRunner({
+    ...cnDeps, sourceFile: path.join(cnProblem, 'main.cpp'),
   }).run();
 
   check('中文路径下编译成功', rCn.build.ok, true);
-  check('走了 ASCII 中转', rCn.build.staged, true);
-  check('产物落回中文路径的 temp/', fs.existsSync(path.join(cnTemp, 'main.exe')), true);
+  check('走的是相对路径，不是 ASCII 中转', rCn.build.staged, undefined);
+  check('编译命令行里不含任何非 ASCII 字符（这才是根治点）', R.isAsciiSafe(rCn.build.command), true);
+  check('产物参数确实是相对路径', /-o\s+temp[\\/]main\.exe/.test(rCn.build.command), true);
+  check('产物落在中文路径的 temp/', fs.existsSync(path.join(cnTemp, 'main.exe')), true);
   check('中文路径下判定通过', [rCn.summary.passed, rCn.summary.failed], [1, 0]);
-  ok('报告说明了中转原因', /ASCII 中转/.test(fs.readFileSync(path.join(cnTest, 'report.md'), 'utf8')));
-  check('直接往中文路径写产物会失败（这正是必须中转的原因）',
-    fs.existsSync(path.join(cnProblem, 'temp', 'main.exe')), true);
+
+  // 源文件名含中文：产物名固定 ASCII，所以不该被带崩
+  // （实测边界：编译器**读**含中文的源路径没问题，出事的一直只是**写**产物那一步）
+  const cnSrc2 = path.join(cnProblem, '我的解法.cpp');
+  fs.copyFileSync(path.join(cnProblem, 'main.cpp'), cnSrc2);
+  const rCn2 = await new R.LocalTestRunner({ ...cnDeps, sourceFile: cnSrc2, forceRebuild: true }).run();
+  check('源文件名含中文也能编译', rCn2.build.ok, true);
+  const outArg2 = (rCn2.build.command.match(/-o\s+(\S+)/) || [])[1] || '';
+  check('产物参数仍是纯 ASCII（与源文件名无关）', R.isAsciiSafe(outArg2), true);
 
   const directFail = await W.runProcess({
     command: GPP,
@@ -283,7 +297,7 @@ if (HAS_GPP) {
     outFile: path.join(cnTemp, 'direct.log'), errFile: path.join(cnTemp, 'direct.log2'),
     limits: { timeoutMs: 30000, maxOutputBytes: 1024 * 1024, maxMemoryBytes: 1024 * 1024 * 1024 },
   });
-  ok('不经中转时 ld 报错退出（复现原始故障）', directFail.exitCode !== 0);
+  ok('对照：产物用绝对路径（含中文）时 ld 报错退出', directFail.exitCode !== 0);
   ok('错误信息确实是乱码路径', /No such file or directory/.test(fs.readFileSync(path.join(cnTemp, 'direct.log2'), 'utf8')));
 } else {
   console.log(`\n  skip  未找到本机 g++（${GPP}），[2]–[11] 组跳过。`);

@@ -40,6 +40,14 @@ import { runProcess, readErrorTail, WatchdogKind, WatchdogLimits, RunProcessOutc
 
 const IS_WINDOWS = process.platform === 'win32';
 
+/**
+ * 编译产物的固定文件名（不含扩展名）。
+ *
+ * 刻意不派生自源文件名：源文件名是用户可配的，一旦含中文，产物名会跟着含中文，
+ * 而 MinGW 的 `ld` 恰好写不出非 ASCII 路径的产物（详见 `relativeArg`）。
+ */
+const PRODUCT_STEM = 'main';
+
 /** 编译的超时与输出上限单独放宽：编译慢是正常的，不该被运行的 10s 闸误杀 */
 export const DEFAULT_BUILD_TIMEOUT_MS = 60_000;
 export const BUILD_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
@@ -128,7 +136,7 @@ export interface BuildResult {
   command: string;
   /** 编译产物路径（解释型 = 源文件本身） */
   runnable: string;
-  /** 产物是否经 ASCII 中转目录编译后拷回（见 `ToolchainDef.asciiSafeOutput`） */
+  /** 产物是否经 ASCII 中转目录编译后拷回（仅「相对路径不可用」的跨盘场景才会出现） */
   staged?: boolean;
   /** 编译器输出原文（失败时原样回传，契约 C3） */
   output: string;
@@ -203,7 +211,29 @@ export function isAsciiSafe(p: string): boolean {
 }
 
 /**
+ * 把路径参数表达成相对于 `from` 的相对路径（不可行时返回 undefined）。
+ *
+ * 这是非 ASCII 产物路径的**主解法**，也是实测出来的：
+ * MinGW 的 `ld` 只有在产物路径**写进命令行参数**且含非 ASCII 时才失败 ——
+ * 它拿到的是 ANSI 字符串，`3775-新生赛` 被解成乱码，于是报
+ * `cannot open output file ...: No such file or directory`（看着像路径不存在，极易误判）。
+ *
+ * 而相对路径 `temp/main.exe` 本身全是 ASCII，中文只留在子进程的 Unicode cwd 里，
+ * 由内核在拼接时处理，不会产生编码损失。本项目布局 `<cid>-<标题>` / `<字母>-<标题>`
+ * 目录名含中文是常态，所以这条是主路径，不是兜底。
+ *
+ * 跨盘或产物不在 `from` 之下时无解，返回 undefined 交给调用方退回 ASCII 中转。
+ */
+export function relativeArg(from: string, to: string): string | undefined {
+  const rel = nodePath.relative(from, to);
+  if (!rel || nodePath.isAbsolute(rel) || rel.startsWith('..')) { return undefined; }
+  return rel;
+}
+
+/**
  * 找一个 ASCII 安全的暂存目录（`%TEMP%` 优先，用户名含中文时退到系统盘根）。
+ *
+ * 只在**相对路径不可用**（跨盘）时才需要它，见 `relativeArg`。
  *
  * 找不到就返回 undefined —— 那时只能照原路径编译，让编译器如实报错，而不是我们瞎猜。
  */
@@ -378,8 +408,9 @@ export class LocalTestRunner {
       };
     }
 
-    const stem = nodePath.basename(this.deps.sourceFile, nodePath.extname(this.deps.sourceFile));
-    const product = nodePath.join(tempDir, stem + (IS_WINDOWS ? '.exe' : ''));
+    // 产物名固定 ASCII：源文件名是用户可配的（`oj.project.sourceFileName`），
+    // 若拿它派生产物名，用户把源文件改成中文名就会重新踩进 ld 的编码坑里。
+    const product = nodePath.join(tempDir, PRODUCT_STEM + (IS_WINDOWS ? '.exe' : ''));
     const buildRecord = nodePath.join(tempDir, 'build.json');
     const hash = sha1(`${sourceText}\n--${def.id}--\n${def.compile}`);
 
@@ -394,17 +425,28 @@ export class LocalTestRunner {
       }
     }
 
-    // ASCII 中转：工具链声明了 `asciiSafeOutput` 且产物路径含非 ASCII 时，
-    // 把 `{output}` 指到纯 ASCII 暂存目录编译，成功后再把产物复制回 `temp/`。
-    // 实测：MinGW 的 ld 在中文路径下写不出产物，而本项目布局的目录名含中文是常态。
-    const staging = def.asciiSafeOutput === true && !isAsciiSafe(product)
-      ? makeAsciiStagingDir()
-      : undefined;
-    const compileTarget = staging ? nodePath.join(staging, nodePath.basename(product)) : product;
+    // 路径参数用相对路径（cwd 就是题目目录）：命令行里因此不含非 ASCII 字符，
+    // MinGW 的 ld 不会再被中文路径搞崩。详见 `relativeArg`。
+    // 只有跨盘这种相对路径无解的情形，才退回 ASCII 中转目录编译再拷回 `temp/`。
+    let outputArg = product;
+    let sourceArg = this.deps.sourceFile;
+    let staging: string | undefined;
+    if (def.asciiSafeOutput === true) {
+      const relOut = relativeArg(this.deps.sourceDir, product);
+      const relSrc = relativeArg(this.deps.sourceDir, this.deps.sourceFile);
+      if (relOut) {
+        outputArg = relOut;
+        if (relSrc) { sourceArg = relSrc; }
+      } else {
+        staging = makeAsciiStagingDir();
+        outputArg = staging ? nodePath.join(staging, nodePath.basename(product)) : product;
+      }
+    }
+    const compileTarget = staging ?? product;
 
-    const argv = expandTemplate(def.compile, this.templateVars({ output: compileTarget }));
+    const argv = expandTemplate(def.compile, this.templateVars({ output: outputArg, source: sourceArg }));
     const commandText = argv.join(' ');
-    this.log(`编译：${commandText}`);
+    this.log(`编译（cwd=${this.deps.sourceDir}）：${commandText}`);
 
     const stdoutLog = nodePath.join(tempDir, 'build.stdout.log');
     const stderrLog = nodePath.join(tempDir, 'build.stderr.log');
@@ -449,7 +491,11 @@ export class LocalTestRunner {
       }, null, 2), 'utf8');
     }
 
-    return { ok, reused: false, durationMs: outcome.durationMs, command: commandText, runnable: product, output, staged };
+    return {
+      ok, reused: false, durationMs: outcome.durationMs, command: commandText,
+      runnable: product, output,
+      ...(staged ? { staged: true } : {}),
+    };
   }
 
   private readBuildRecord(file: string): { hash?: string; product?: string; command?: string } | undefined {
@@ -627,7 +673,7 @@ export function buildReport(r: TestRunResult, deps: RunnerDeps): string {
   L.push(`编译：${r.build.reused ? '复用上次产物（源文件未变）' : `重新编译 ${r.build.durationMs} ms`}`);
   if (r.build.staged) {
     L.push('');
-    L.push('> 产物经 ASCII 中转目录编译后拷回 `temp/`：该工具链无法在含非 ASCII 的路径下写产物（MinGW 的 `ld` 实测如此）。');
+    L.push('> 产物经 ASCII 中转目录编译后拷回 `temp/`：本次相对路径不可用（产物与源文件不在同一盘），改由纯 ASCII 暂存目录编译。');
   }
   L.push('');
   L.push(`- 编译命令：\`${r.build.command}\``);

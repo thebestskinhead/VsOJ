@@ -26,7 +26,7 @@ check('java 认领', T.matchToolchain(builtin, 'Main.java').id, 'java');
 check('不认领的扩展名', T.matchToolchain(builtin, 'notes.txt'), undefined);
 check('解释型没有 compile', builtin.find(d => d.id === 'python').compile, undefined);
 check('compile 为空视为解释型', T.normalizeDef({ id: 'x', extensions: ['.x'], run: '"x" "{runnable}"' }).def.kind, 'interpreted');
-check('C/C++ 声明「产物需 ASCII 安全」（MinGW ld 实测限制）',
+check('C/C++ 声明「产物路径须纯 ASCII」（MinGW ld 实测限制；引擎用相对路径满足）',
   [builtin[0].asciiSafeOutput, builtin[1].asciiSafeOutput], [true, true]);
 check('Java/Python 不声明该限制（实测它们往中文路径写产物正常）',
   [builtin[2].asciiSafeOutput, builtin[3].asciiSafeOutput], [undefined, undefined]);

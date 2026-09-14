@@ -88,6 +88,9 @@ S6 的目标就是补上这一步：**一键把本地这份源码跑一遍样例
    
    这条尤其要紧，因为本项目布局里**目录名含中文是常态**（`<cid>-<标题>` / `<字母>-<标题>`），
    而报错长得像「路径不存在」，极容易被误判成代码或配置问题。
+   **解法（补测确认）**：让编译时的路径参数走**相对路径**即可根治 ——
+   同样的中文目录下 `-o temp/main.exe`（cwd = 题目目录）**编译成功**，
+   而 `-o <绝对路径含中文>` 失败。命令行里没有非 ASCII 字符，问题就不存在了（见 §5.9）。
 
 ---
 
@@ -222,17 +225,27 @@ renderResultPage()                                          ← D12/D13
 - 打开时机默认「每次测试都弹」（配置 `oj.test.resultPage` 可改 `always|onFailure|never`）。
 - 过期判定：当前源文件哈希 ≠ `result.json.sourceHash` → 顶部标「代码已改动，结果可能已过期」。
 
-### 5.9 ASCII 中转（`asciiSafeOutput`）
+### 5.9 非 ASCII 产物路径：相对路径为主，跨盘才退回中转（`asciiSafeOutput`）
 
-工具链可以声明「本工具链无法在非 ASCII 路径下写产物」。引擎遇到该声明 + 产物路径含非 ASCII 时：
+工具链可声明 `asciiSafeOutput`：**「传给编译器的产物路径必须纯 ASCII」**。
+引擎满足它的手段按优先级如下（实测得出，见 §3 事实 7）：
 
-1. 把 `{output}` 指到纯 ASCII 暂存目录（`%TEMP%\vsoj-build\<随机>`）编译；
-2. 编译成功后把产物**复制回** `temp/`（保持 S5 布局语义：产物就在题目目录的 `temp/` 里）；
-3. 删掉暂存目录；`result.json` 的 `build.staged` 与报告都会说明「走了中转」。
+1. **相对路径（主路径）** —— 编译时 `cwd` 本就是题目目录，于是把 `{source}` / `{output}`
+   都渲染成相对路径（`main.cpp`、`temp/main.exe`）。命令行里因此**不含任何非 ASCII 字符**，
+   中文只存在于子进程的 Unicode cwd 里，由内核拼接，不会有编码损失。
+   零成本：不复制、不清理、不依赖 `%TEMP%`。
+2. **产物名固定 ASCII** —— 产物恒为 `main(.exe)`，**不派生自源文件名**。
+   源文件名是用户可配的（`oj.project.sourceFileName`），派生的话用户改成中文名就会再次踩坑。
+3. **ASCII 中转（仅跨盘）** —— 产物与源文件不在同一盘时相对路径无解，
+   退回 `%TEMP%\vsoj-build\<随机>` 编译再拷回 `temp/`；`build.staged` 与报告会说明。
 
-**为什么用声明式能力位而不是在引擎里判语言**：引擎依旧零语言特判（契约 C1），
-差异由工具链自己声明 —— 这与「编译型/解释型」的区别是同一套思路。
-Java/Python 不声明该位，因为它们往中文路径写产物本来就正常（已实测）。
+**实测边界（这三条决定了上面为什么这样切）**：
+- 产物路径**写进命令行**且含非 ASCII → `ld` 失败；换成相对路径 → 成功
+- 产物**放在**非 ASCII 路径下**运行** → 完全正常（Bash 与 Node `spawn` 都验证过）
+- 源文件路径含非 ASCII → **编译正常**（出事的一直只是「写产物」这一步）
+
+**为什么用声明式能力位而不是在引擎里判语言**：引擎依旧零语言特判（契约 C1）。
+Java/Python 不声明该位（它们往中文路径写产物本来就正常，已实测）。
 
 ---
 
@@ -242,7 +255,8 @@ Java/Python 不声明该位，因为它们往中文路径写产物本来就正�
 |---|---|---|---|
 | S6.0 ✅ | 工具链模型、内置三套、命令解析与 PATH 推导、JSON 读写 | `src/test/toolchain.ts` | `test/toolchain.test.js`（65） |
 | S6.1 ✅ | 严格比较器：LF 归一化、逐字节、首个差异定位（行/列/hex） | `src/test/compare.ts` | `test/compare.test.js`（49） |
-| S6.2 ✅ | 引擎：prepare/run/看门狗/产物复用/结果落盘 + ASCII 中转，**纯 Node 可跑** | `src/test/runner.ts`、`src/test/watchdog.ts` | `test/runner.test.js`（66，真实 g++ 端到端） |
+| S6.2 ✅ | 引擎：prepare/run/看门狗/产物复用/结果落盘，**纯 Node 可跑** | `src/test/runner.ts`、`src/test/watchdog.ts` | `test/runner.test.js`（66，真实 g++ 端到端） |
+| S6.2.1 ✅ | 中文路径根治：编译路径参数改相对路径（删掉「必须中转」的绕路） | `src/test/runner.ts` | `test/runner.test.js`（70） |
 | S6.3 | 接线层：配置项、store/paths 对接、命令与右键菜单 | `src/test/wiring.ts`、`extension.ts`、`package.json` | `test/test-wiring.test.js` |
 | S6.4 | 结果页 webview（两级、亮色） | `src/webview/testResultWebview.ts` | `test/test-result-page.test.js` |
 | S6.5 | MCP 三个新工具 | `src/mcp/tools.ts`、`server.ts` | `test/mcp-test-tools.test.js` |
@@ -267,8 +281,9 @@ Java/Python 不声明该位，因为它们往中文路径写产物本来就正�
 - **C11** 结果页不引用任何 `--vscode-*` 主题变量（沿用 S5.8 的亮色约定，由 `theme.test.js` 守住）。
 - **C12** 代码改动后旧结果标记为**已过期**而非删除（D14）。
 - **C13** 写文件仅限题目目录内的 `temp/` 与 `test/`；不碰 `samples/`、不碰用户源文件。
-- **C14** 声明了 `asciiSafeOutput` 的工具链，产物路径含非 ASCII 时必须走 ASCII 中转，
-  且**产物最终必须落在 `temp/`**（中转目录要清理，不留垃圾）。
+- **C14** 声明了 `asciiSafeOutput` 的工具链，**传给编译器的产物路径必须纯 ASCII**：
+  优先相对路径；不可用（跨盘）时才走 ASCII 中转，且产物最终必须落在 `temp/`（中转目录要清理）。
+- **C16** 编译产物的文件名固定为 `main(.exe)`，**不得派生自源文件名**（源文件名用户可配、可能含中文）。
 - **C15** 引擎不得出现任何语言名判断：语言差异只能体现为 `ToolchainDef` 里的声明
   （`kind` / 命令模板 / 能力位）。
 
