@@ -34,8 +34,9 @@ import { formatBytes, numToLetter } from './utils/format';
 import { ProblemInitializer } from './workspace/initializer';
 import { buildInitDeps } from './workspace/wiring';
 import { openSourceInLeftColumn as openLeftSource } from './workspace/openSource';
-import { buildTestDeps } from './test/wiring';
+import { buildTestDeps, listSampleIndexes } from './test/wiring';
 import { LocalTestRunner, RunnerDeps, TestRunResult } from './test/runner';
+import { registerOjTasks, OjTasksHandle } from './test/tasks';
 import {
   InitEntryDismissals, NO_FOLDER_TEXT, decideOpenProblem, decideSubmit, makeFacts,
 } from './workspace/guard';
@@ -834,6 +835,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }
 
         await problemWebview.show(actualCid, pid, { readOnly: decision.noCache });
+        // 当前题目变了 → 「跑一下（样例 N）」的列表跟着更新
+        ojTasks.refresh();
       } catch (e: any) {
         vscode.window.showErrorMessage(`加载题目失败: ${e.message}`);
       }
@@ -1313,6 +1316,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await runLocalTests(item);
     })
   );
+
+  /**
+   * 自定义任务（type `oj`）：编译 / 本地测试 / 强制重新编译 / 跑一下。
+   *
+   * 命令在**运行时**由工具链层解析，所以同一份任务定义在 Windows / Linux / macOS 都成立
+   * （对照 shell 任务：那会把「我这台机器的命令」写进用户的 tasks.json）。
+   * 用户自己的 `launch.json` 里写 `"preLaunchTask": "oj: 编译当前题目"`，
+   * 就能把它接进任意调试器 —— 我们不绑任何调试器。
+   */
+  const ojTasks: OjTasksHandle = registerOjTasks({
+    store: cache,
+    workspaceRoot: () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '',
+    resolveTarget: () => resolveProblemTarget(undefined),
+    listSamples: (t) => listSampleIndexes(cache, t.cid, t.pid),
+    log: logInfo,
+  });
+  context.subscriptions.push(ojTasks);
 
   // oj.debugShow — 显示 Debug 频道
   context.subscriptions.push(

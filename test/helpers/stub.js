@@ -70,7 +70,18 @@ function installVscodeStub(config = {}, options = {}) {
       }),
     },
     Uri: { file: (p) => ({ fsPath: p, scheme: 'file' }) },
-    EventEmitter: class { constructor() { this.event = () => ({ dispose: () => {} }); } fire() {} dispose() {} },
+    EventEmitter: class {
+      constructor() {
+        this._listeners = [];
+        // 与真实 API 一致：`event` 是「注册订阅」的函数（不是数组）
+        this.event = (listener) => {
+          this._listeners.push(listener);
+          return { dispose: () => { this._listeners = this._listeners.filter((l) => l !== listener); } };
+        };
+      }
+      fire(value) { for (const l of [...this._listeners]) { l(value); } }
+      dispose() { this._listeners = []; }
+    },
     TreeItem: class {
       constructor(label, collapsibleState) {
         this.label = label;
@@ -84,6 +95,20 @@ function installVscodeStub(config = {}, options = {}) {
     StatusBarAlignment: { Left: 1, Right: 2 },
     ViewColumn: { One: 1, Two: 2 },
     commands: { executeCommand: () => {}, registerCommand: () => ({ dispose: () => {} }) },
+    tasks: { registerTaskProvider: () => ({ dispose: () => {} }) },
+    Task: class {
+      constructor(definition, scope, name, source, execution) {
+        this.definition = definition;
+        this.scope = scope;
+        this.name = name;
+        this.source = source;
+        this.execution = execution;
+      }
+    },
+    TaskScope: { Global: 1, Workspace: 2 },
+    CustomExecution: class {
+      constructor(callback) { this.callback = callback; }
+    },
     env: { clipboard: { writeText: async () => {} } },
   };
 

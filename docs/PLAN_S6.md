@@ -247,6 +247,40 @@ renderResultPage()                                          ← D12/D13
 **为什么用声明式能力位而不是在引擎里判语言**：引擎依旧零语言特判（契约 C1）。
 Java/Python 不声明该位（它们往中文路径写产物本来就正常，已实测）。
 
+### 5.10 「跑一下」—— 自研的调试入口（用户决策）
+
+刷题时九成的「调试」其实是「拿样例跑一遍，看输出对不对」。而这条路用 VS Code 自带调试器走不通：
+
+- cppdbg **不是**自己启动程序，它通过 MI 协议驱动 gdb，**「启动程序」那条命令（`-exec-run`）由它自己发**；
+  `launch.json` 的 schema 里根本没有 stdin 字段（只有 `program`/`args`/`cwd`/`env`/`externalConsole`）；
+- `run < 1.in` 是 gdb 自己的语法，cppdbg 不会替你带上；硬塞只能靠 `miDebuggerArgs` 挂 gdb 脚本，
+  而它随后还会再发一次 `-exec-run`，行为不可控；
+- 退一步说，就算绕过去了，绑定调试器还意味着要为三个平台分别适配（gdb / lldb / cpptools 各自不同）——
+  代价与收益完全不成比例。
+
+所以本项目的调试入口是**自研的**，并且只提供两条**平台无关**的通道（用户决策）：
+
+| 通道 | 形态 | 说明 |
+|---|---|---|
+| **自定义任务** | `type: oj` 的任务：编译 / 本地测试 / 强制重新编译 / 跑一下 | 命令由工具链层**运行时**解析，同一份定义三平台通吃；终端里实时输出 |
+| **MCP 工具** | 让 AI 自己编译、跑样例、读结果 | 见 S6.6 |
+
+实现要点：
+
+1. **不经过 shell**：`child_process` + pipe，自己把字节写进 `CustomExecution` 的 Pseudoterminal。
+   走 shell 就要分 cmd/bash（引号、重定向、分隔符全不同），走真 pty 就要引 node-pty（原生模块要编译）。
+2. **换行必须是 CRLF**：伪终端里只写 `
+` 光标不回行首，输出会变阶梯状 ——
+   而且这个坑**在 Windows 上不明显、在 Linux 上才暴露**，所以由 `makeTerminalWriter` 统一处理，
+   并专门处理「`\r` 与 `\n` 落在两个数据块」的情况（否则会偶发多出一个空行）。
+3. **输入只来自样例文件**：`stdin` 直接接 `fs.open` 的 fd，不支持在终端里手敲（用户决策）。
+   程序读到 EOF 自然结束，也不需要 JS 侧搬运输入。
+4. **关终端 = 杀子进程**：`close()` 会杀掉正在跑的子进程，不留野进程占 CPU。
+5. **「跑一下」不判定**：结束只报告退出码与耗时。有样例不通过**不**改变「跑一下」的退出码，
+   而「本地测试」的退出码会反映判定结果（有失败 → 1），便于脚本与 CI 识别。
+6. **与测试共用一个产物**：`prepareOnly()` 与 `run()` 走同一个 `prepare`，
+   所以「跑一下」和「本地测试」用的必定是同一个二进制，不会出现「测试过了但跑一下是旧的」。
+
 ---
 
 ## 6. 阶段切分（每阶段一次 commit + 独立可验证测试套件）
@@ -257,12 +291,11 @@ Java/Python 不声明该位（它们往中文路径写产物本来就正常，�
 | S6.1 ✅ | 严格比较器：LF 归一化、逐字节、首个差异定位（行/列/hex） | `src/test/compare.ts` | `test/compare.test.js`（49） |
 | S6.2 ✅ | 引擎：prepare/run/看门狗/产物复用/结果落盘，**纯 Node 可跑** | `src/test/runner.ts`、`src/test/watchdog.ts` | `test/runner.test.js`（66，真实 g++ 端到端） |
 | S6.2.1 ✅ | 中文路径根治：编译路径参数改相对路径（删掉「必须中转」的绕路） | `src/test/runner.ts` | `test/runner.test.js`（70） |
-| S6.3 | 接线层：配置项、store/paths 对接、命令与右键菜单 | `src/test/wiring.ts`、`extension.ts`、`package.json` | `test/test-wiring.test.js` |
-| S6.4 | 结果页 webview（两级、亮色） | `src/webview/testResultWebview.ts` | `test/test-result-page.test.js` |
-| S6.5 | MCP 三个新工具 | `src/mcp/tools.ts`、`server.ts` | `test/mcp-test-tools.test.js` |
-| S6.6 | VS Code Task：合并写入 `.vscode/tasks.json` | `src/test/taskTemplate.ts` | `test/task-template.test.js` |
-| S6.7 | 工具链可视化编辑页（增删改 + 试跑命令） | `src/webview/toolchainWebview.ts` | `test/toolchain-page.test.js` |
-| S6.8 | 文档收口 + 冒烟扩展 | `README` / `PROGRESS` / `ARCHITECTURE` / `scripts/smoke-*` | 全量 `npm test` |
+| S6.3 ✅ | 接线层：7 个配置项、选工具链、发现样例、命令与右键菜单 | `src/test/wiring.ts`、`extension.ts`、`package.json` | `test/test-wiring.test.js`（44） |
+| S6.4 ✅ | 自定义任务（`oj` 类型）+ 终端桥：编译 / 本地测试 / 强制重编译 / **跑一下** | `src/test/tasks.ts`、`src/test/terminal.ts` | `test/tasks.test.js`（43，真实 g++ 端到端） |
+| S6.5 | 结果页 webview（两级、亮色） | `src/webview/testResultWebview.ts` | `test/test-result-page.test.js` |
+| S6.6 | MCP 四工具：编译 / 本地测试 / 读最近结果 / 读题目图片 | `src/mcp/tools.ts`、`server.ts` | `test/mcp-test-tools.test.js` |
+| S6.7 | 工具链可视化编辑页 + macOS 内存探测回退 + 文档收口 | `src/webview/toolchainWebview.ts` 等 | `test/toolchain-page.test.js` |
 
 ---
 
@@ -284,6 +317,10 @@ Java/Python 不声明该位（它们往中文路径写产物本来就正常，�
 - **C14** 声明了 `asciiSafeOutput` 的工具链，**传给编译器的产物路径必须纯 ASCII**：
   优先相对路径；不可用（跨盘）时才走 ASCII 中转，且产物最终必须落在 `temp/`（中转目录要清理）。
 - **C16** 编译产物的文件名固定为 `main(.exe)`，**不得派生自源文件名**（源文件名用户可配、可能含中文）。
+- **C17** 任务与运行器**不得生成平台相关的命令**并写入用户文件（不写 `.vscode/tasks.json` 的 shell 命令）：
+  命令一律在运行时由工具链层解析，保证同一份定义在 Windows / Linux / macOS 都成立。
+- **C18** 写进伪终端的内容必须是 CRLF；流式输出要处理「`\r` 与 `\n` 分属两个数据块」。
+- **C19** 「跑一下」的输入只来自样例文件，不提供手动输入；关闭终端必须杀掉正在跑的子进程。
 - **C15** 引擎不得出现任何语言名判断：语言差异只能体现为 `ToolchainDef` 里的声明
   （`kind` / 命令模板 / 能力位）。
 

@@ -531,7 +531,8 @@
     "test:toolchain": "npm run compile && node test/toolchain.test.js",
     "test:compare": "npm run compile && node test/compare.test.js",
     "test:runner": "npm run compile && node test/runner.test.js",
-    "test:wiring": "npm run compile && node test/test-wiring.test.js"
+    "test:wiring": "npm run compile && node test/test-wiring.test.js",
+    "test:tasks": "npm run compile && node test/tasks.test.js"
   },
   "devDependencies": {
     "@types/cheerio": "^0.22.35",

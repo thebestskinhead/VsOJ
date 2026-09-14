@@ -171,3 +171,23 @@ export function pickSampleInput(deps: RunnerDeps, index: number): string | undef
   const hit = deps.cases.find((c) => c.index === index);
   return (hit ?? deps.cases[0])?.inputFile;
 }
+
+/**
+ * 列出某题已有的样例序号（用来生成「跑一下（样例 N）」任务）。
+ *
+ * 用**同步**快照 `store.cachedContestPaths`：任务列表刷新是同步 API，
+ * 而这份同步快照的存在理由正是这种「只看目录、不读内容」的场景。
+ */
+export function listSampleIndexes(store: CacheStore, cid: string, pid: string): number[] {
+  const paths = store.cachedContestPaths(cid);
+  if (!paths) { return []; }
+  try {
+    return fs.readdirSync(paths.samplesDir(pid))
+      .filter((f) => /^\d+\.in$/.test(f))
+      .map((f) => parseInt(f, 10))
+      .filter((n) => Number.isFinite(n))
+      .sort((a, b) => a - b);
+  } catch {
+    return [];
+  }
+}
