@@ -64,10 +64,7 @@ export class TestToolService {
     const t = this.resolveTarget(args);
     if ('error' in t) { return t.error; }
 
-    const built = await this.deps.buildDeps(t.cid, t.pid, {
-      forceRebuild: args?.rebuild === true,
-      title: t.title,
-    });
+    const built = await this.deps.buildDeps(t.cid, t.pid, this.buildOpts(args, t.title));
     if (!built.ok) {
       return `编译没能开始 · ${this.nameOf(t)}\n\n${built.error}`;
     }
@@ -110,10 +107,7 @@ export class TestToolService {
     const t = this.resolveTarget(args);
     if ('error' in t) { return t.error; }
 
-    const built = await this.deps.buildDeps(t.cid, t.pid, {
-      forceRebuild: args?.rebuild === true,
-      title: t.title,
-    });
+    const built = await this.deps.buildDeps(t.cid, t.pid, this.buildOpts(args, t.title));
     if (!built.ok) {
       return `测试没能开始 · ${this.nameOf(t)}\n\n${built.error}`;
     }
@@ -213,6 +207,25 @@ export class TestToolService {
 
   private nameOf(t: { cid: string; pid: string; title: string }): string {
     return t.title ? `题目 ${t.cid}-${t.pid}《${t.title}》` : `题目 ${t.cid}-${t.pid}`;
+  }
+
+  /**
+   * 装配参数。
+   *
+   * **`rebuild` 只在显式为 `true` 时才传**：`buildTestDeps` 用
+   * `opts.forceRebuild ?? !isBuildReuseEnabled()` 决定要不要复用产物，
+   * 一旦传了 `false` 就等于「显式要求不复用」，会把 `oj.test.reuseBuild` 静默压掉 ——
+   * MCP 于是与命令面板行为相反（配置说复用，MCP 每次重编；配置说不复用，MCP 偷偷复用）。
+   * 所以「没传 / 传 false」一律当**没有意见**，让配置说了算。
+   */
+  private buildOpts(
+    args: Record<string, any>,
+    title: string,
+  ): { forceRebuild?: boolean; title?: string } {
+    return {
+      ...(args?.rebuild === true ? { forceRebuild: true } : {}),
+      ...(title ? { title } : {}),
+    };
   }
 
   /** `toolchains.json` 的问题（文件不存在等）不静默 —— 它会让工具链「看起来」不对 */

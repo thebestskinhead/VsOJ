@@ -21,7 +21,7 @@
 | S6.5.1 | 2026-09-14 | **修**：题目列表标题栏按钮重启后全消失（`oj.inContest` 派生 + 启动恢复） | `npm test` 22 套件；`test:context-sync` 13 项 |
 | S6.6 | 2026-09-14 | **结果页 webview**：两级明细（列表 → 期望/实际/差异）、过期标记、零脚本、全通过不抢焦点 | `npm test` 23 套件；`test:result-page` 61 项 |
 | S6.6.1 | 2026-09-14 | **提交结果页重写**：统一亮色样式 + 待判定行**就地轮询**（对齐站点 `auto_refresh.js`）、可点开判题详情；旧「原样嵌站点页面」下线 | `npm test` 24 套件；`test:status-webview` 136 项 |
-| S6.7 | 2026-09-14 | **MCP 三工具**：`compile_problem` / `run_local_test` / `get_last_test_result`；`get_current_problem` 补 `local` 段（源文件/样例/题面图片/产物的本地绝对路径）。AI 侧「改代码 → 本地验证 → 再改」闭环补上最后一环 | `npm test` 25 套件；`test:mcp-test-tools` 87 项（真实 `McpToolHandler` + 真 g++ 端到端） |
+| S6.7 | 2026-09-14 | **MCP 三工具**：`compile_problem` / `run_local_test` / `get_last_test_result`；`get_current_problem` 补 `local` 段（源文件/样例/题面图片/产物的本地绝对路径）。AI 侧「改代码 → 本地验证 → 再改」闭环补上最后一环 | `npm test` 25 套件；`test:mcp-test-tools` 91 项（真实 `McpToolHandler` + 真 g++ 端到端） |
 
 ---
 
@@ -451,7 +451,7 @@ MCP 那侧当时只有五个只读与配置类工具，缺的正是最后一环�
   `result.json` 重渲染」不必伪造一份 `RunnerDeps`。
 - `package.json`：新增 `npm run test:mcp-test-tools`。
 
-**验证**：`test/mcp-test-tools.test.js` 87 项 —— 工具注册表（含「没有读图片的独立工具」的
+**验证**：`test/mcp-test-tools.test.js` 91 项 —— 工具注册表（含「没有读图片的独立工具」的
 反向断言）、`get_current_problem` 的 `local` 段（含半对样例、图片路径、无 base64）、
 `compile_problem` 三种结局（工具链缺失 / 编译失败带编译器原文 / 成功给产物与运行命令）、
 `run_local_test`（全通过、差一字节的定位、没有成对样例、跳过用例点名、**返回文本逐字包含
@@ -460,6 +460,25 @@ MCP 那侧当时只有五个只读与配置类工具，缺的正是最后一环�
 都没有给可操作文案）、口径静态检查（不弹界面、复用 `buildReport`、不自己 spawn 编译器）。
 用**真实的 `McpToolHandler`** + 真 g++ 编译真源码跑真样例；找不到 g++ 时降级为 skip 并说明。
 `npm test` → **25 套件全通过**（`test/config-tools` 的「工具总数」断言从 5 改到 8）。
+
+**真机验证（用真实比赛目录的真数据跑生产路径）**：把用户真实比赛目录里需要的最小集合
+（`meta.json` + W 题的 `main.cpp` / `samples` / `assets`）复制到临时工作区，
+再走扩展里同一条链路（`CacheStore` → `buildTestDeps` → `LocalTestRunner` →
+`TestToolService` → `McpToolHandler`），工具链取用户自己的 `.vsoj/toolchains.json`：
+
+- `compile_problem` → `D:\usexxx\gcc\...\g++.exe -O2 -std=c++17 -o temp\main.exe main.cpp` 编译成功；
+- `run_local_test` → **共 1 组，通过 1**（W 题真实样例 `1.in` / `1.out`，期望 10 字节 = 实际 10 字节）；
+- `get_current_problem` 的 `local` 段给出真实的 3 张题面图片与样例的绝对路径。
+
+**真机直接抓出一个缺陷（已修）**：`compile_problem` / `run_local_test` 原先无条件把
+`forceRebuild: args?.rebuild === true` 传给 `buildTestDeps` —— 传了 `false` 就等于
+「显式要求不复用」，把 `oj.test.reuseBuild` **静默压掉**，于是 MCP 与命令面板行为相反
+（配置说不复用，MCP 却复用了上次产物）。改成「只在显式为 `true` 时才传」，
+并补了 4 项断言（`test:mcp-test-tools` 87 → 91）钉住这条语义。
+**这条只有真跑才会暴露**：单测里配置与参数恰好一致，看不出差别。
+
+产物：`outputs/MCP测试工具调用记录.md`（六个工具的真实调用输出）、
+`outputs/mcp_test_tools_demo.js`（演示脚本，复制真数据到临时工作区，不碰用户原目录）。
 
 ---
 

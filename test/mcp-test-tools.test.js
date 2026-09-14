@@ -286,6 +286,28 @@ async function main() {
     [1, 3].forEach((i, k) => fs.writeFileSync(path.join(SAMPLES, `${i}.out`), kept[k], 'utf8'));
   }
 
+  // ── 4.5 rebuild 参数必须让位给 oj.test.reuseBuild ──────────
+  console.log('\n[4.5] rebuild 参数不能压掉 oj.test.reuseBuild');
+  if (HAS_GPP) {
+    fs.writeFileSync(SOURCE, CORRECT, 'utf8');
+    env.config['oj.test.reuseBuild'] = false;
+    await call(handler, 'compile_problem');
+    const c2 = await call(handler, 'compile_problem');
+    ok('配置说不复用 → 每次都重编（MCP 不越过配置）', !c2.includes('复用'));
+    const c3 = await call(handler, 'compile_problem', { rebuild: false });
+    ok('显式 rebuild:false 也只当「没意见」，不压掉配置', !c3.includes('复用'));
+
+    env.config['oj.test.reuseBuild'] = true;
+    await call(handler, 'compile_problem');
+    const c4 = await call(handler, 'compile_problem');
+    ok('配置说复用 → 第二次命中复用', c4.includes('复用上次产物'));
+    const c5 = await call(handler, 'compile_problem', { rebuild: true });
+    ok('显式 rebuild:true 仍能强制重编', !c5.includes('复用'));
+    env.config['oj.test.reuseBuild'] = false;
+  } else {
+    console.log('  ~ 跳过（无 g++）');
+  }
+
   // ── 5. get_last_test_result（不重跑） ───────────────────────
   console.log('\n[5] get_last_test_result');
   fs.rmSync(RESULT_FILE, { force: true });
