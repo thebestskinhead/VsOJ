@@ -13,6 +13,11 @@
 | S4 | 2026-09-13 | 运行期缓存刷新与离线预览（缓存改为只存原始信息） | `npm test` 7 套件 / 281 项断言 + 真实站点冒烟 |
 | S5 | 2026-09-13 | 比赛项目初始化（懒初始化 / 全量预取 / 左代码右题目 / 无工作区守卫） | `npm test` 12 套件 / 520 项断言 + 真实站点冒烟 84 项 |
 | S5.8 | 2026-09-13 | 页面固定亮色主题（自绘 Webview 不再跟随编辑器配色） | `npm run test:theme` 10 项断言 |
+| S6.0–S6.2 | 2026-09-14 | 本地测试引擎：工具链模型 / 严格比较器 / prepare-run-compare + 三闸看门狗 | `npm test` 16 套件；`test:toolchain` 65、`test:compare` 49、`test:runner` 70（真实 g++ 端到端） |
+| S6.2.1 | 2026-09-14 | 中文路径改由**相对路径**根治（MinGW 的 `ld` 写不出非 ASCII 产物路径） | `npm run test:runner` 70 项 |
+| S6.3 | 2026-09-14 | 测试接线层：7 个 `oj.test.*` 配置项、选工具链、发现样例、命令与右键菜单 | `npm run test:wiring` 44 项 |
+| S6.4 | 2026-09-14 | 自定义任务（`oj` 类型）+ 终端桥：编译 / 本地测试 / 强制重编译 / **跑一下** | `npm run test:tasks` 43 项（真实 g++ 端到端） |
+| S6.5 | 2026-09-14 | **配置说明书 + AI 初始化工具**（MCP：`get_config_manual` / `init_config`），`docs/CONFIG.md` 随插件发布 | `npm test` 21 套件；`test:config-manual` 44、`test:config-writer` 85、`test:config-tools` 54 |
 
 ---
 
@@ -215,6 +220,66 @@ axios 会自动跟随重定向 —— 而**提交成功后站点同样 302 到 `
 
 ---
 
+## S6.5 — 配置说明书与 AI 初始化工具（2026-09-14）
+
+**起因**：用户的判断是 **「这个肯定不能是人来配了」**。工具链路径、`baseUrl` 这些
+散在三个地方（`package.json` 声明、`toolchains.json` 文件格式、只有读代码才知道的语义差别），
+让用户去设置面板里逐个翻既不现实，也解释不了「`cache.ttlSeconds` 和 `cache.staleSeconds`
+谁管谁」这类问题。于是改成：**说明书给 AI 读，配置由 AI 探测后自己写进去**。
+
+**做了什么**
+
+1. **单一真相源** `src/config/manual.ts`
+   - 结构（键名 / 类型 / 默认值 / 枚举）**运行时**从 `package.json` 的
+     `contributes.configuration` 读取 → 加配置项自动进说明书，不可能漏；
+   - 语义（用途 / 取值 / 示例 / 坑 / 是否必需 / 对应 getter）写在同一文件的 `CONFIG_SEMANTICS`；
+   - `renderManual()` 同时供 MCP 工具与 `docs/CONFIG.md` 使用，两边内容必定一致。
+2. **两个 MCP 工具**
+   - `get_config_manual`：读说明书。`section` 可只取一节（`quickstart` / `settings` /
+     `toolchains` / `files` / `pitfalls`），`format: json` 给机器可读版省 token。
+   - `init_config`：写配置。**默认只预览**，`apply: true` 才落盘；
+     计划有 error 时拒绝落盘；覆盖 `toolchains.json` 前自动备份。
+3. **写配置的决策层纯函数化** `src/config/writer.ts`
+   - `planConfigWrite()` 不碰磁盘、不依赖 VS Code → 「AI 给错了会怎样」能在纯 Node 里测；
+   - 落盘副作用全部经 `ConfigWriteIo` 注入。
+4. **`docs/CONFIG.md`**（`npm run docs:config` 生成）随插件发布 —— `docs/` 不在 `.vscodeignore` 里。
+
+**修掉的两个既有缺陷**
+
+1. **部分覆盖根本不被接受**：`normalizeDef` 要求 `run` / `extensions` 必填，
+   而 `parseToolchains` 直接校验原始条目 —— 于是「只改一下 g++ 路径」
+   （`{"id":"cpp-g++","commands":{"gpp":["…"]}}`）会被当成坏条目**丢掉**。
+   这是最自然的写法，也是 AI 最可能给出来的形态。现在按内置定义补全后再校验；
+   非内置 `id` 仍要求完整定义。写回文件时也只写覆盖字段，内置模板以后改进能自动继承。
+2. **`config-consistency` 的检查被说明书削弱**：它判断「配置项有没有人读」靠
+   「键名字符串在源码里出现过」，而说明书里每个键都作为引号键名出现 → 会对所有项假通过。
+   现已把 `manual.ts` 从扫描里排除（**说明书不是消费方**）。
+
+**顺带抓出两个死配置**（说明书如实标 `unused`，README 也点名）
+
+| 配置项 | 情况 |
+|---|---|
+| `oj.defaultLanguage` | `getDefaultLanguage()` 全项目零调用方 |
+| `oj.autoRefreshStatus` | 自动刷新实由命令 `oj.toggleStatusAutoRefresh` 的内存标志控制，与该设置无关 |
+
+> 抓法是新加的一致性断言：数「读取函数的调用次数」，只有定义没有调用方的判为未生效。
+> 原有检查只在源码里找键名字符串，抓不到「有 getter 但没人用」——两者互补。
+
+**验证**：`npm test` → 21 套件全通过。其中 `test/config-tools.test.js` 走的是 MCP 真实入口
+（`McpToolHandler`），用临时工作区里的**真文件**做 `settings.json` / `toolchains.json` 读写，
+再用真实 loader（`effectiveToolchains`）读回确认覆盖生效 —— 也就是端到端验证了
+「AI 读说明书 → 探测本机 → `init_config` → 配置真的生效」这条链路。
+
+**经验**
+- 「不会过期的文档」只能靠**生成 + 断言**：结构从声明生成，语义由双向核对兜底，
+  渲染产物再由漂移断言钉死。三者缺一，文档迟早和代码说两样话。
+- **给 AI 用的工具，报错信息就是产品本身**：键名打错要给「是不是想写 X」、
+  命令解析失败要列「探测过哪些位置」，否则 AI 只能靠猜。
+- **自动纠正必须留痕**：省前缀、大小写能自动修，但要出提示 ——
+  静默纠正会让 AI 以为自己写对了，这个错下次还会犯。
+
+---
+
 ## 比赛目录初始化：现状与缺口（S5 开工前评审 · 已全部闭环）
 
 > 本节是 S5 开工前的评审记录，**保留作为决策依据**。
@@ -275,11 +340,18 @@ axios 会自动跟随重定向 —— 而**提交成功后站点同样 302 到 `
   （**20 条决策全部经用户拍板**、S5.0–S5.7 阶段切分、15 条行为契约）。
   核心形态：**懒初始化单题（默认）+ 侧边栏条目全量预取**，共用同一个 `ensureProblem()`；
   比赛目录建在 **workspace 可见根**（`<cid>-<标题>/`），题目目录用 `<字母>-<标题>/`。
-- **S6 本地测试引擎 + MCP 扩展** —— 下一步。题目图片返回、样例识别、
-  以 exe 为输入的一键本地测试，并支持通过 `.vscode/tasks.json` 接入编辑器流水线。
-  MCP 现有 3 个工具（`get_contest_problems` / `get_current_problem` / `get_contest_list`）
-  **尚未扩展**。S5 已为它备好地基：`test/` 目录、`temp/`（编译产物与运行 cwd）、
-  `samples/*.in|out`、`main.cpp` 都在初始化时落位。
+- 🔄 **S6 本地测试引擎 + MCP 扩展** —— 进行中。已完成 S6.0–S6.5：
+  - ✅ 引擎与工具链：`prepare` / `run` / `compare` 三步 + 三闸看门狗（`src/test/`）
+  - ✅ 接线层 + 自定义任务（`oj` 类型）：编译 / 本地测试 / 强制重编译 / **跑一下**
+  - ✅ 配置说明书与 AI 初始化：MCP `get_config_manual` / `init_config` + `docs/CONFIG.md`
+  - ⏳ 待做：**S6.6 结果页 webview**（两级、亮色）、**S6.7 MCP 三工具**
+    （编译 / 本地测试 / 读最近结果 + 读题目图片）、**S6.8 工具链编辑页 +
+    macOS 内存探测回退 + 文档收口**
+  - MCP 工具现状：共 **5 个**（`get_config_manual` / `init_config` /
+    `get_contest_problems` / `get_current_problem` / `get_contest_list`）。
+- **注意：两个配置项当前不生效** —— `oj.defaultLanguage` 与 `oj.autoRefreshStatus`
+  声明了但没有代码消费（详见 `docs/CONFIG.md` 的「声明了但当前版本没生效」）。
+  要么接上，要么从声明里摘掉，别让它继续误导。
 - **S3 静态资源层** —— 把登录/提交页从 TS 字符串外置到 `media/`，用 `asWebviewUri` 加载。
   **经复核：尚未落地**（无 `media/` 目录，`asWebviewUri` 零引用）。
 - **S7 状态页静态化** —— 替换 `statusPanel` 中代理渲染 OJ 原生 `status.php` 的做法。

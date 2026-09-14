@@ -2,6 +2,7 @@ import { ContestService } from '../api/contest';
 import { ProblemService } from '../api/problem';
 import { StateManager } from '../utils/state';
 import { Contest, ProblemBrief, ProblemDetail } from '../types';
+import { ConfigToolService } from '../config/tools';
 
 /** MCP Tool 定义 */
 export interface McpTool {
@@ -13,6 +14,10 @@ export interface McpTool {
       type: string;
       description: string;
       default?: any;
+      /** 数组/对象的元素声明（`init_config` 的 toolchains 需要） */
+      items?: any;
+      enum?: any[];
+      additionalProperties?: any;
     }>;
     required: string[];
   };
@@ -79,6 +84,75 @@ const TOOLS: McpTool[] = [
       required: [],
     },
   },
+  {
+    name: 'get_config_manual',
+    description: '【配置本插件前先读这个】读取 VsOJ 插件的配置说明书：全部 oj.* 配置项的类型/默认值/取值/示例/常见坑、'
+      + 'toolchains.json 的字段与文件格式、命令查找与 PATH 注入规则、以及初始化配置的标准步骤。'
+      + '插件不内置任何个人环境路径，配置它需要先知道「有哪些可配、怎么配、哪里一踩就废」——这份说明书就是答案。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        section: {
+          type: 'string',
+          description: '只取某一部分（默认 all 全文）：quickstart 初始化步骤 / settings 全部配置项 / '
+            + 'toolchains 工具链定义格式 / files 配置文件位置 / pitfalls 常见坑 / all 全部',
+          default: 'all',
+          enum: ['all', 'quickstart', 'settings', 'toolchains', 'files', 'pitfalls'],
+        },
+        format: {
+          type: 'string',
+          description: 'markdown（默认，含语义、示例与坑）或 json（机器可读、更省 token，但不含解释性文字）',
+          default: 'markdown',
+          enum: ['markdown', 'json'],
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'init_config',
+    description: '初始化 / 更新 VsOJ 配置。**插件不猜你的机器**：它不内置任何个人环境路径、也不扫盘找编译器，'
+      + '编译器位置由调用方探测后通过 toolchains 传入（只写要覆盖的字段即可，其余继承内置定义）。'
+      + '默认**只预览不落盘**，返回「当前值 → 将写入值 + 命令解析结果」；确认后带 apply:true 再调一次才写盘，'
+      + '覆盖旧文件前会自动备份。计划中存在错误（键名打错、值类型不对、工具链定义非法）时**拒绝落盘**。'
+      + '`settings` 的值写 null 表示该项重置回默认。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        settings: {
+          type: 'object',
+          description: '要写入的 oj.* 配置项。键可带或不带 `oj.` 前缀（如 baseUrl 或 oj.baseUrl）。'
+            + '值写 null 表示重置回默认值。例：{"oj.baseUrl":"http://acm.example.edu.cn","oj.mcp.enabled":true}',
+          additionalProperties: true,
+        },
+        toolchains: {
+          type: 'array',
+          description: '工具链覆盖 / 新增。只需写要覆盖的字段，其余继承内置定义。'
+            + '例：[{"id":"cpp-g++","commands":{"gpp":["D:\\\\tools\\\\mingw64\\\\bin\\\\g++.exe"]},'
+            + '"pathPrepend":["D:\\\\tools\\\\mingw64\\\\bin"]}]',
+          items: { type: 'object' },
+        },
+        toolchainMode: {
+          type: 'string',
+          description: 'merge（默认）保留文件里已有的其它定义；replace 整份重写',
+          default: 'merge',
+          enum: ['merge', 'replace'],
+        },
+        scope: {
+          type: 'string',
+          description: 'workspace（默认）写当前工作区设置；global 写全局 User 设置（所有项目生效）',
+          default: 'workspace',
+          enum: ['workspace', 'global'],
+        },
+        apply: {
+          type: 'boolean',
+          description: '省略或 false = 只预览不落盘；true = 真的写入配置',
+          default: false,
+        },
+      },
+      required: [],
+    },
+  },
 ];
 
 /**
@@ -89,15 +163,18 @@ export class McpToolHandler {
   private contestService: ContestService;
   private problemService: ProblemService;
   private state: StateManager;
+  private configService?: ConfigToolService;
 
   constructor(
     contestService: ContestService,
     problemService: ProblemService,
     state: StateManager,
+    configService?: ConfigToolService,
   ) {
     this.contestService = contestService;
     this.problemService = problemService;
     this.state = state;
+    this.configService = configService;
   }
 
   /** 返回所有注册的 tool 列表 */
@@ -114,10 +191,48 @@ export class McpToolHandler {
         return this.handleGetCurrentProblem(args);
       case 'get_contest_list':
         return this.handleGetContestList(args);
+      case 'get_config_manual':
+        return this.handleGetConfigManual(args);
+      case 'init_config':
+        return this.handleInitConfig(args);
       default:
         return {
           content: [{ type: 'text', text: `未知工具: ${name}` }],
         };
+    }
+  }
+
+  /** 配置说明书 —— 纯读，不碰磁盘 */
+  private handleGetConfigManual(args: Record<string, any>): McpToolResult {
+    if (!this.configService) {
+      return {
+        content: [{
+          type: 'text',
+          text: '配置工具不可用：插件未提供配置目录（通常是安装包不含 package.json）。',
+        }],
+      };
+    }
+    const r = this.configService.getManual(args);
+    return { content: [{ type: 'text', text: r.text }] };
+  }
+
+  /** 初始化配置 —— 默认只预览，`apply: true` 才落盘 */
+  private async handleInitConfig(args: Record<string, any>): Promise<McpToolResult> {
+    if (!this.configService) {
+      return {
+        content: [{
+          type: 'text',
+          text: '配置工具不可用：插件未接线配置读写 IO。',
+        }],
+      };
+    }
+    try {
+      const r = await this.configService.initConfig(args);
+      return { content: [{ type: 'text', text: r.text }] };
+    } catch (e: any) {
+      return {
+        content: [{ type: 'text', text: `初始化配置失败: ${e?.message ?? e}` }],
+      };
     }
   }
 

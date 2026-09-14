@@ -23,6 +23,7 @@ import { LANGUAGE_EXT, ProblemBrief } from './types';
 import { initDebugChannel, showDebugChannel, clearDebugChannel, setDebugEnabled, isDebugEnabled, logInfo } from './utils/debug';
 import { McpServer } from './mcp/server';
 import { McpToolHandler } from './mcp/tools';
+import { buildConfigToolService } from './config/wiring';
 import { initMcpChannel, showMcpChannel, disposeMcpChannel, clearMcpChannel } from './mcp/logger';
 import { initCacheStore } from './cache/store';
 import { ProblemRefresher } from './cache/refresher';
@@ -155,7 +156,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // ==========================================
   // MCP 服务器
   // ==========================================
-  const mcpToolHandler = new McpToolHandler(contestService, problemService, state);
+  const mcpToolHandler = new McpToolHandler(
+    contestService,
+    problemService,
+    state,
+    // 配置说明书 / 初始化配置：AI 靠这两个工具自己把插件配起来（探测本机是 AI 的活）
+    buildConfigToolService({
+      extensionPath: context.extensionPath,
+      globalStoragePath: context.globalStorageUri.fsPath,
+    }),
+  );
 
   // 状态栏按钮
   const mcpStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);

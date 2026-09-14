@@ -12,13 +12,21 @@ const { check, ok, done } = makeChecker();
 const root = path.dirname(__dirname);
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 
-/** 收集 src 下所有 ts 源码（拼成一份大文本，够用且快） */
+/**
+ * 收集 src 下所有 ts 源码（拼成一份大文本，够用且快）。
+ *
+ * **排除 `src/config/manual.ts`**：那是配置说明书的语义表，里面每个配置项都以
+ * 引号键名出现（`'test.timeoutMs': { ... }`）。算进来的话，「声明了但没人读」这条
+ * 会对**所有**配置项假通过 —— 检查就废了。说明书不是消费方。
+ */
 function collectSources(dir) {
   let out = '';
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
     const p = path.join(dir, e.name);
     if (e.isDirectory()) { out += collectSources(p); }
-    else if (e.name.endsWith('.ts')) { out += fs.readFileSync(p, 'utf8'); }
+    else if (e.name.endsWith('.ts') && e.name !== 'manual.ts') {
+      out += fs.readFileSync(p, 'utf8');
+    }
   }
   return out;
 }
@@ -83,6 +91,21 @@ console.log('\n[5] S5 关键配置项的默认值');
   check('oj.project.lazyInit 默认开（D14）', props['oj.project.lazyInit'].default, true);
   check('oj.project.initEntryVisible 默认开（D2）', props['oj.project.initEntryVisible'].default, true);
   check('源文件名默认 main.cpp（D8）', props['oj.project.sourceFileName'].default, 'main.cpp');
+}
+
+console.log('\n[6] MCP 工具声明 -> 分发');
+{
+  const toolSrc = fs.readFileSync(path.join(root, 'src', 'mcp', 'tools.ts'), 'utf8');
+  const names = [...toolSrc.matchAll(/^\s{4}name: '([a-z_]+)',/gm)].map(m => m[1]);
+  ok('至少注册了几个工具', names.length >= 3);
+  const undispatched = names.filter(n => !toolSrc.includes(`case '${n}':`));
+  check('无「注册了但没分发」的工具', undispatched, []);
+  ok('配置说明书工具在', names.includes('get_config_manual'));
+  ok('初始化配置工具在', names.includes('init_config'));
+
+  // 这两个工具的声明必须真的被接线（否则 AI 调了会说「不可用」）
+  const extSrc = fs.readFileSync(path.join(root, 'src', 'extension.ts'), 'utf8');
+  ok('extension 里真的构造了配置服务', /buildConfigToolService\s*\(/.test(extSrc));
 }
 
 process.exit(done() ? 0 : 1);

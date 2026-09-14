@@ -16,25 +16,33 @@ OJ 在线判题平台 VS Code 插件，让你在 VS Code 内完成全部 OJ 操�
 
 ## 配置
 
-在 VS Code 设置中搜索 `oj`或者点击”比赛列表“旁边的设置按钮可配置以下选项：
+完整配置说明（每一项的类型、默认值、取值、示例、常见坑）见 **[docs/CONFIG.md](docs/CONFIG.md)**
+—— 这份文档由 `npm run docs:config` 从源码生成，随插件一起发布，因此不会与插件实际行为脱节。
+
+**最省事的配法：让 AI 来配。** 插件通过 MCP 提供了 `get_config_manual`（读说明书）与
+`init_config`（探测后写入）两个工具，AI 可以自己完成配置，不需要你逐个翻设置面板。见
+[MCP 服务器 → 让 AI 自己配置插件](#让-ai-自己配置插件)。
+
+也可以手动在 VS Code 设置里搜索 `oj`，或点“比赛列表”旁边的设置按钮。**只有一项是必配的**：
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
-| `oj.baseUrl` | `http://localhost` | OJ 平台的 Base URL |
-| `oj.defaultLanguage` | `cpp` | 默认编程语言（c/cpp/java） |
-| `oj.autoRefreshStatus` | `true` | 提交后是否自动刷新状态 |
-| `oj.statusRefreshInterval` | `5000` | 状态刷新间隔（毫秒） |
-| `oj.statusViewMode` | `browser` | 状态查看方式：`browser`（外部浏览器）、`webview`（内嵌页面）、`output`（文本表格） |
-| `oj.mcp.enabled` | `false` | 插件启动时是否自动启动 MCP 服务器 |
-| `oj.mcp.port` | `9527` | MCP 服务器监听端口 |
-| `oj.workspace.root` | `.vsoj` | 本地缓存与比赛工作目录名称（相对工作区根目录） |
-| `oj.cache.enabled` | `true` | 是否把比赛/题目/状态写入本地缓存 |
-| `oj.cache.ttlSeconds` | `180` | 缓存有效期（秒），`-1` 表示永不过期 |
-| `oj.cache.offline` | `false` | 离线模式：只读本地缓存，不发起网络请求 |
-| `oj.session.keepAliveInterval` | `240000` | 会话保活心跳间隔（毫秒），`0` 关闭 |
-| `oj.session.probeInterval` | `600000` | 登录态探测间隔（毫秒），`0` 表示仅跟随心跳探测 |
-| `oj.session.autoRelogin` | `true` | 识别到登录失效时自动打开登录页 |
-| `oj.session.autoReplaySubmit` | `true` | 重新登录成功后自动恢复原题目并回到提交页 |
+| `oj.baseUrl` | `http://localhost` | OJ 平台的 Base URL。默认值只是占位符，不改它插件等于没配 |
+| `oj.mcp.enabled` | `false` | 建议配合上面那项一起打开：AI 靠 MCP 通道读题、跑测试、写配置 |
+
+其余 25 项都有合理默认值，按需再调。**注意有 2 项在当前版本不生效**
+（`oj.defaultLanguage`、`oj.autoRefreshStatus`，详见说明书的「声明了但当前版本没生效」一节）。
+
+工具链（本地测试用哪个编译器）不在 VS Code 设置里，而在 `.vsoj/toolchains.json`：
+内置 C/C++、Java、Python 四套，你只需要写**要覆盖的字段**，例如把 g++ 指到你的便携环境：
+
+```json
+{
+  "toolchains": [
+    { "id": "cpp-g++", "commands": { "gpp": ["D:\\tools\\mingw64\\bin\\g++.exe"] } }
+  ]
+}
+```
 
 
 ## 命令清单
@@ -213,23 +221,51 @@ MCP 服务器启动后监听 `http://127.0.0.1:{port}/mcp`（默认 9527 端口�
 
 MCP 协议提供了以下工具供 AI Agent 调用：
 
-**1. get_contest_problems**
+**1. get_config_manual** ⭐ 配置本插件前先读这个
+
+读取本插件的配置说明书：全部配置项的类型 / 默认值 / 取值 / 示例 / 常见坑、
+`toolchains.json` 的字段与文件格式、命令查找与 PATH 注入规则、初始化配置的标准步骤。
+
+参数（可选）：`section` - `all`（默认）/ `quickstart` / `settings` / `toolchains` / `files` / `pitfalls`；
+`format` - `markdown`（默认）或 `json`（更省 token）。
+
+**2. init_config** ⭐ 让 AI 自己把配置写好
+
+初始化 / 更新配置。插件**不猜你的机器**（不内置个人环境路径、也不扫盘找编译器），
+编译器位置由 AI 探测后通过 `toolchains` 传入。默认**只预览不落盘**，确认后带 `apply: true` 才写，
+覆盖旧文件前自动备份；计划里有错误（键名打错、类型不对、定义非法）时**拒绝落盘**。
+
+参数（可选）：`settings` - 要写入的 `oj.*` 项（键可省 `oj.` 前缀，值写 `null` 表示重置回默认）、
+`toolchains` - 工具链覆盖/新增（只写要覆盖的字段）、`toolchainMode` - `merge`/`replace`、
+`scope` - `workspace`/`global`、`apply` - 是否真的落盘。
+
+**3. get_contest_problems**
 
 获取比赛题目列表。包含题目编号、标题、AC 状态等。
 
 参数（可选）：`cid` - 比赛 ID，不传则使用当前已进入的比赛。
 
-**2. get_current_problem**
+**4. get_current_problem**
 
 获取题目详细内容。默认返回当前在插件中打开的题目，也可通过参数指定任意比赛和题目。包括题目描述、输入说明、输出说明、样例等。
 
 参数（可选）：`cid` - 比赛 ID、`pid` - 题目 ID。均不传则使用当前题目。
 
-**3. get_contest_list**
+**5. get_contest_list**
 
 分页获取比赛列表，支持关键词搜索。
 
 参数（可选）：`page` - 页码（默认 1）、`keyword` - 搜索关键词。
+
+### 让 AI 自己配置插件
+
+配置本插件不需要人工去设置面板里逐个找。标准流程是：
+
+1. AI 调 `get_config_manual` 读说明书；
+2. AI **自己探测本机**（`g++ --version`、找常见安装目录、或问你）拿到编译器绝对路径；
+3. AI 调 `init_config` 先看预览，确认后再带 `apply: true` 落盘。
+
+第二次以后的调用是幂等的：已经一致的内容不会被重复写入。
 
 ### MCP 调用示例
 
@@ -244,20 +280,35 @@ curl -X POST http://127.0.0.1:9527/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
 
+# 读配置说明书（只取初始化步骤，省 token）
+curl -X POST http://127.0.0.1:9527/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_config_manual","arguments":{"section":"quickstart"}}}'
+
+# 预览一次配置（不落盘）
+curl -X POST http://127.0.0.1:9527/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"init_config","arguments":{"settings":{"oj.baseUrl":"http://acm.example.edu.cn"},"toolchains":[{"id":"cpp-g++","commands":{"gpp":["D:\\\\tools\\\\mingw64\\\\bin\\\\g++.exe"]}}]}}}'
+
+# 确认无误后落盘（把同一份 arguments 再加上 apply:true）
+curl -X POST http://127.0.0.1:9527/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"init_config","arguments":{"apply":true,"settings":{"oj.baseUrl":"http://acm.example.edu.cn"}}}}'
+
 # 获取当前打开题目的内容（不传参数）
 curl -X POST http://127.0.0.1:9527/mcp \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_current_problem"}}'
+  -d '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"get_current_problem"}}'
 
 # 获取指定比赛和题目的内容
 curl -X POST http://127.0.0.1:9527/mcp \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"get_current_problem","arguments":{"cid":"1000","pid":"0"}}}'
+  -d '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"get_current_problem","arguments":{"cid":"1000","pid":"0"}}}'
 
 # 获取指定比赛的题目列表
 curl -X POST http://127.0.0.1:9527/mcp \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"get_contest_problems","arguments":{"cid":"1000"}}}'
+  -d '{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"get_contest_problems","arguments":{"cid":"1000"}}}'
 ```
 
 ## 项目结构

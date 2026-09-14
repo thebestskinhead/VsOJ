@@ -283,6 +283,72 @@ Java/Python 不声明该位（它们往中文路径写产物本来就正常，�
 
 ---
 
+### 5.11 配置说明书与 AI 初始化（用户追加需求）
+
+用户的诉求：**「这个肯定不能是人来配了」** —— 工具链、baseUrl 这些不该让用户去设置面板里翻；
+并且要求「在 MCP 中接入一个工具，专门读取插件的各种配置说明，并提供一个初始化配置方法，写进 md 文档」。
+
+三条口径由用户当场拍板：
+
+| 项 | 用户的说法 | 落地含义 |
+|---|---|---|
+| 说明书性质 | 「这个是插件内部的说明书，用于给 AI 自行编辑插件的」「会随插件发布的，只读」 | 说明书是**给 AI 读的产品文档**，随插件发布、不做成可编辑内容 |
+| 探测谁来做 | 「这个就让 AI 自行扫描了」 | 插件**不扫盘、不内置任何个人环境路径**；探测是 AI 的活，插件只负责写 |
+| 写盘权限 | 「写进配置，给 AI 决定」 | 工具**真的写配置**，值由 AI 决定 |
+
+**两个 MCP 工具**
+
+| 工具 | 作用 |
+|---|---|
+| `get_config_manual` | 返回配置说明书。`section` 可只取一节；`format: json` 给机器可读版省 token |
+| `init_config` | 写配置。**默认只预览**，`apply: true` 才落盘；有 error 时拒绝落盘 |
+
+**单一真相源**（这是「不会过期」的关键）
+
+- **结构**（键名 / 类型 / 默认值 / 枚举）运行时从 `package.json` 的 `contributes.configuration` 生成
+  → 加一个配置项，说明书自动多一行，**不可能漏**；
+- **语义**（用途 / 取值 / 示例 / 坑）写在 `src/config/manual.ts` 的 `CONFIG_SEMANTICS` 里；
+- 一致性测试双向核对：声明了必须有语义、有语义必须有声明 → **不可能漂**。
+
+`docs/CONFIG.md` 由 `npm run docs:config` 从同一份真相源渲染，而测试断言
+「磁盘上的文件 == 现在生成的结果」—— 于是仓库文档、MCP 工具返回值、插件真实行为三者一致。
+
+**`init_config` 的几处设计取舍**
+
+1. **预览优先**：配置是「会改坏东西」的操作，而调用方是 AI。计划函数是纯的
+   （不碰磁盘、不依赖 VS Code），所以「键名打错」「类型不对」「定义非法」都能在**落盘之前**被测出来。
+   有 error 时 `applyConfigWrite` 直接拒绝执行。
+2. **键名容错但必须留痕**：省 `oj.` 前缀、大小写写错都能自动纠正，但**记一条提醒**；
+   拼错太多则报错并给出「是不是想写 X」的建议（编辑距离 ≤3）。静默纠正不可接受 ——
+   那会让 AI 以为自己写对了。
+3. **`null` = 重置回默认**（从 `settings.json` 里删掉该项），而不是写个 `null` 进去。
+4. **工具链只写覆盖字段**：写进文件的只有 AI 给的字段，其余留给内置定义在读取时补全，
+   于是内置模板以后改进能自动继承，不会被文件里的旧副本挡住。
+   > 为此**修掉了一个既有缺陷**：`normalizeDef` 要求 `run` / `extensions` 必填，
+   > 导致「只改 g++ 路径」这种最自然的写法会被当成坏条目丢掉。现在 `parseToolchains`
+   > 会先以内置定义为底补全再校验（非内置 `id` 仍要求完整定义）。
+5. **落盘前预检命令**：用「将要生效的定义」实探一遍命令能否解析，
+   失败时把**探测过的位置**列出来 —— AI 的路径写错了，在预览里就能看见，
+   不用等跑测试才炸。
+6. **备份**：覆盖 `toolchains.json` 前自动备份（带时间戳，不覆盖已有备份）。
+7. **没打开文件夹时**明确拒绝写「工作区」级设置，并给出两条出路（打开文件夹 / 用 `global`），
+   而不是等 VS Code 抛一句难懂的话。
+
+**顺带发现的两个死配置**（说明书里如实标出，`unused: true`）
+
+| 配置项 | 情况 |
+|---|---|
+| `oj.defaultLanguage` | `getDefaultLanguage()` 全项目没有任何调用方，提交页语言是独立选择的 |
+| `oj.autoRefreshStatus` | 自动刷新实际由命令 `oj.toggleStatusAutoRefresh` 控制一个**运行期内存标志**，与该设置无关 |
+
+> 这两条都是新加的一致性断言抓出来的：它数「读取函数的调用次数」，
+> 只有定义没有调用方的就判为未生效。原有的 `config-consistency` 只在源码里找键名字符串，
+> 抓不到「有 getter 但没人用」这种 —— 两种检查互补。
+> 同时把 `src/config/manual.ts` 从这两处源码扫描里排除：说明书会按名字提到配置键与 getter，
+> 那是文档不是消费，算进去会让检查假通过。
+
+---
+
 ## 6. 阶段切分（每阶段一次 commit + 独立可验证测试套件）
 
 | 阶段 | 内容 | 交付物 | 测试 |
@@ -293,9 +359,10 @@ Java/Python 不声明该位（它们往中文路径写产物本来就正常，�
 | S6.2.1 ✅ | 中文路径根治：编译路径参数改相对路径（删掉「必须中转」的绕路） | `src/test/runner.ts` | `test/runner.test.js`（70） |
 | S6.3 ✅ | 接线层：7 个配置项、选工具链、发现样例、命令与右键菜单 | `src/test/wiring.ts`、`extension.ts`、`package.json` | `test/test-wiring.test.js`（44） |
 | S6.4 ✅ | 自定义任务（`oj` 类型）+ 终端桥：编译 / 本地测试 / 强制重编译 / **跑一下** | `src/test/tasks.ts`、`src/test/terminal.ts` | `test/tasks.test.js`（43，真实 g++ 端到端） |
-| S6.5 | 结果页 webview（两级、亮色） | `src/webview/testResultWebview.ts` | `test/test-result-page.test.js` |
-| S6.6 | MCP 四工具：编译 / 本地测试 / 读最近结果 / 读题目图片 | `src/mcp/tools.ts`、`server.ts` | `test/mcp-test-tools.test.js` |
-| S6.7 | 工具链可视化编辑页 + macOS 内存探测回退 + 文档收口 | `src/webview/toolchainWebview.ts` 等 | `test/toolchain-page.test.js` |
+| S6.5 ✅ | **配置说明书 + AI 初始化工具**（用户追加）：`get_config_manual` / `init_config`，说明书生成与漂移断言 | `src/config/manual.ts`、`writer.ts`、`tools.ts`、`wiring.ts`、`scripts/gen-config-docs.js` | `test/config-manual.test.js`（44）、`test/config-writer.test.js`（85）、`test/config-tools.test.js`（54） |
+| S6.6 | 结果页 webview（两级、亮色） | `src/webview/testResultWebview.ts` | `test/test-result-page.test.js` |
+| S6.7 | MCP 三工具：编译 / 本地测试 / 读最近结果 + 读题目图片 | `src/mcp/tools.ts`、`server.ts` | `test/mcp-test-tools.test.js` |
+| S6.8 | 工具链可视化编辑页 + macOS 内存探测回退 + 文档收口 | `src/webview/toolchainWebview.ts` 等 | `test/toolchain-page.test.js` |
 
 ---
 
@@ -321,6 +388,13 @@ Java/Python 不声明该位（它们往中文路径写产物本来就正常，�
   命令一律在运行时由工具链层解析，保证同一份定义在 Windows / Linux / macOS 都成立。
 - **C18** 写进伪终端的内容必须是 CRLF；流式输出要处理「`\r` 与 `\n` 分属两个数据块」。
 - **C19** 「跑一下」的输入只来自样例文件，不提供手动输入；关闭终端必须杀掉正在跑的子进程。
+- **C20** 配置说明书的结构部分**必须**来自 `package.json` 声明，不得手写；
+  语义部分必须让每个配置项都有条目（双向核对由 `test/config-manual.test.js` 保证）。
+- **C21** `docs/CONFIG.md` 必须与 `renderManual()` 的结果逐字节一致（`npm run docs:config` 重新生成）。
+- **C22** `init_config` 在计划存在 error 时**不得落盘**；覆盖已有文件前**必须**备份；
+  值的自动转换与键名的自动纠正**必须**留下可见提示，不得静默处理。
+- **C23** 部分覆盖：`id` 与内置相同的条目，读取时以内置定义为底补全后再校验；
+  写回文件时**只写覆盖字段**。非内置 `id` 仍要求完整定义。
 - **C15** 引擎不得出现任何语言名判断：语言差异只能体现为 `ToolchainDef` 里的声明
   （`kind` / 命令模板 / 能力位）。
 

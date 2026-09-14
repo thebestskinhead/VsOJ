@@ -420,8 +420,99 @@ export function mergeToolchains(builtin: ToolchainDef[], user: ToolchainDef[]): 
   return order.map(id => byId.get(id)!);
 }
 
-/** 解析磁盘内容（坏 JSON / 坏条目都只记账，不抛） */
-export function parseToolchains(text: string): { defs: ToolchainDef[]; problems: string[] } {
+/**
+ * 把一份定义摊平回「原始形状」（与 {@link serializeToolchains} 的字段集一致）。
+ *
+ * 用途：做**部分覆盖**的补全基准 —— 用户只写 `{id:'cpp-g++', commands:{...}}` 时，
+ * 需要拿内置定义的原始形状垫底才能通过 `normalizeDef` 的必填校验。
+ */
+export function toolchainRawShape(d: ToolchainDef): any {
+  return {
+    id: d.id,
+    label: d.label,
+    kind: d.kind,
+    extensions: d.extensions,
+    commands: d.commands,
+    ...(d.compile ? { compile: d.compile } : {}),
+    run: d.run,
+    ...(d.env ? { env: d.env } : {}),
+    ...(d.pathPrepend ? { pathPrepend: d.pathPrepend } : {}),
+    ...(d.timeoutMs ? { timeoutMs: d.timeoutMs } : {}),
+    ...(d.maxOutputBytes ? { maxOutputBytes: d.maxOutputBytes } : {}),
+    ...(d.maxMemoryBytes ? { maxMemoryBytes: d.maxMemoryBytes } : {}),
+    ...(d.asciiSafeOutput ? { asciiSafeOutput: true } : {}),
+  };
+}
+
+/**
+ * 覆盖合并：`patch` 里有值就用 `patch`，否则沿用 `base`。
+ *
+ * `commands` **按命令名逐个合并**而不是整体替换 —— 否则覆盖 `java` 会把 `javac` 弄丢。
+ * 显式写 `undefined` 视为「不改」（JSON 里也写不出 undefined，这是为了防 JS 侧误传）。
+ */
+export function mergeRawDef(base: any, patch: any): any {
+  const out: any = { ...base, ...patch };
+  if (base?.commands || patch?.commands) {
+    out.commands = { ...(base?.commands ?? {}), ...(patch?.commands ?? {}) };
+  }
+  for (const k of Object.keys(base ?? {})) {
+    if (out[k] === undefined) { out[k] = base[k]; }
+  }
+  return out;
+}
+
+/**
+ * 用户这份覆盖**实际动了哪些字段**（供编辑页/写配置时汇报，避免「改了但没说清」）。
+ *
+ * `commands` 会细到命令名（`commands.gpp`），因为「只换 g++ 路径」正是最常见的一种覆盖。
+ * 非内置 `id` 返回它写了的所有字段。
+ */
+export function overriddenFields(raw: any, builtin: ToolchainDef[]): string[] {
+  if (!raw || typeof raw !== 'object') { return []; }
+  const base = builtin.find(b => b.id === raw.id);
+  if (!base) { return Object.keys(raw).filter(k => raw[k] !== undefined); }
+
+  const shape: any = toolchainRawShape(base);
+  const out: string[] = [];
+  for (const [k, v] of Object.entries(raw)) {
+    if (v === undefined) { continue; }
+    if (k === 'commands') {
+      const names = Object.keys(v as any).filter(
+        (c) => JSON.stringify((v as any)[c]) !== JSON.stringify(shape.commands?.[c]),
+      );
+      if (names.length) { out.push(...names.map((c) => `commands.${c}`)); }
+      continue;
+    }
+    if (JSON.stringify(v) !== JSON.stringify(shape[k])) { out.push(k); }
+  }
+  return out;
+}
+
+/** 读出文件里的**原始条目**（不校验、不补全），供写配置时原样保留用户已有的其它定义 */
+export function parseToolchainsRaw(text: string): { raw: any[]; problems: string[] } {
+  let parsed: any;
+  try {
+    parsed = JSON.parse(text);
+  } catch (e: any) {
+    return { raw: [], problems: [`JSON 解析失败：${e.message}`] };
+  }
+  const list = Array.isArray(parsed) ? parsed : parsed?.toolchains;
+  if (!Array.isArray(list)) { return { raw: [], problems: ['缺少 toolchains 数组'] }; }
+  return { raw: list.filter((x: any) => x && typeof x === 'object'), problems: [] };
+}
+
+/**
+ * 解析磁盘内容（坏 JSON / 坏条目都只记账，不抛）。
+ *
+ * **部分覆盖**：`id` 与内置相同但只写了一部分字段时，以内置定义为底补全后再校验。
+ * 这样「只改一下 g++ 路径」的写法才真的能用 —— 否则 `normalizeDef` 的必填项
+ * （`run` / `extensions`）会把这种最自然的写法判成坏条目丢掉。
+ * 非内置 `id` 仍按完整定义校验（`extensions` 与 `run` 必填）。
+ */
+export function parseToolchains(
+  text: string,
+  builtin: ToolchainDef[] = builtinToolchains(),
+): { defs: ToolchainDef[]; problems: string[] } {
   let raw: any;
   try {
     raw = JSON.parse(text);
@@ -431,10 +522,16 @@ export function parseToolchains(text: string): { defs: ToolchainDef[]; problems:
   const list = Array.isArray(raw) ? raw : raw?.toolchains;
   if (!Array.isArray(list)) { return { defs: [], problems: ['缺少 toolchains 数组'] }; }
 
+  const builtinById = new Map(builtin.map((b) => [b.id, b]));
   const defs: ToolchainDef[] = [];
   const problems: string[] = [];
   for (const item of list) {
-    const { def, problems: p } = normalizeDef(item);
+    const id = typeof item?.id === 'string' ? item.id.trim() : '';
+    const base = builtinById.get(id);
+    const candidate = base && item && typeof item === 'object'
+      ? mergeRawDef(toolchainRawShape(base), item)
+      : item;
+    const { def, problems: p } = normalizeDef(candidate);
     if (def) { defs.push(def); }
     if (p.length) { problems.push(...p); }
   }
@@ -459,6 +556,37 @@ export function serializeToolchains(defs: ToolchainDef[]): string {
     ...(d.asciiSafeOutput ? { asciiSafeOutput: true } : {}),
   }));
   return `${JSON.stringify({ version: 1, toolchains: clean }, null, 2)}\n`;
+}
+
+/** `toolchains.json` 里允许出现的字段（顺序即写出顺序） */
+export const TOOLCHAIN_FILE_FIELDS = [
+  'id', 'label', 'kind', 'extensions', 'commands', 'compile', 'run',
+  'env', 'pathPrepend', 'timeoutMs', 'maxOutputBytes', 'maxMemoryBytes', 'asciiSafeOutput',
+] as const;
+
+/**
+ * 序列化**用户定义**（只保留写了的字段）。
+ *
+ * 与 {@link serializeToolchains} 的区别：那个用于「把完整定义摊平」（编辑页场景），
+ * 这个用于写回覆盖文件 —— 只写覆盖项，其余字段留给内置定义在读取时补全，
+ * 于是内置模板以后改进（比如 `-std=c++20`）能自动被继承，不会被文件里的旧副本挡住。
+ */
+export function serializeUserToolchains(rawList: any[]): string {
+  const out: any[] = [];
+  for (const item of rawList) {
+    if (!item || typeof item !== 'object') { continue; }
+    const clean: any = {};
+    for (const k of TOOLCHAIN_FILE_FIELDS) {
+      const v = (item as any)[k];
+      if (v === undefined || v === null || v === '') { continue; }
+      if (Array.isArray(v) && v.length === 0) { continue; }
+      if (typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0) { continue; }
+      if (k === 'asciiSafeOutput' && v !== true) { continue; }
+      clean[k] = v;
+    }
+    if (clean.id) { out.push(clean); }
+  }
+  return `${JSON.stringify({ version: 1, toolchains: out }, null, 2)}\n`;
 }
 
 /**

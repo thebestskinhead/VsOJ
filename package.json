@@ -532,7 +532,11 @@
     "test:compare": "npm run compile && node test/compare.test.js",
     "test:runner": "npm run compile && node test/runner.test.js",
     "test:wiring": "npm run compile && node test/test-wiring.test.js",
-    "test:tasks": "npm run compile && node test/tasks.test.js"
+    "test:tasks": "npm run compile && node test/tasks.test.js",
+    "test:config-manual": "npm run compile && node test/config-manual.test.js",
+    "test:config-writer": "npm run compile && node test/config-writer.test.js",
+    "test:config-tools": "npm run compile && node test/config-tools.test.js",
+    "docs:config": "npm run compile && node scripts/gen-config-docs.js"
   },
   "devDependencies": {
     "@types/cheerio": "^0.22.35",
