@@ -80,7 +80,7 @@ S6 的目标就是补上这一步：**一键把本地这份源码跑一遍样例
 6. MCP 是 **HTTP server**（默认 9527），`handleToolsCall` 把整个 result 对象原样返回，
    → 新增工具与新增内容类型（如 `image`）只需扩类型，不用改传输层。
 7. **MinGW 的 `ld` 无法在含非 ASCII 的产物路径下创建文件**（写实现时被演示脚本炸出来的）：
-   `cannot open output file ...\3775-新生埧\A-A+B问题\temp\main.exe: No such file or directory`，
+   `cannot open output file ...\3775-新生赛\A-A+B问题\temp\main.exe: No such file or directory`，
    路径被按 GBK 解释成乱码。对照实测结论：
    - 同一个源文件、产物路径改成纯 ASCII → **编译成功**（说明只是「写产物」这一步的问题）
    - 产物**放在**中文路径下 → **运行完全正常**（Bash 与 Node `spawn` 都验证过）
@@ -209,18 +209,6 @@ renderResultPage()                                          ← D12/D13
 扫 `samples/*.in` → 排序 → 有配对 `.out` 的进用例表；只有 `.in` 的进 `skipped` 列表，
 报告里明确写「第 3 组只有 3.in、缺 3.out，已跳过（不计入通过率）」。
 
-### 5.9 ASCII 中转（`asciiSafeOutput`）
-
-工具链可以声明「本工具链无法在非 ASCII 路径下写产物」。引擎遇到该声明 + 产物路径含非 ASCII 时：
-
-1. 把 `{output}` 指到纯 ASCII 暂存目录（`%TEMP%\vsoj-build\<随机>`）编译；
-2. 编译成功后把产物**复制回** `temp/`（保持 S5 布局语义：产物就在题目目录的 `temp/` 里）；
-3. 删掉暂存目录；`result.json` 的 `build.staged` 与报告都会说明「走了中转」。
-
-**为什么用声明式能力位而不是在引擎里判语言**：引擎依旧零语言特判（契约 C1），
-差异由工具链自己声明 —— 这与「编译型/解释型」的区别是同一套思路。
-Java/Python 不声明该位，因为它们往中文路径写产物本来就正常（已实测）。
-
 ### 5.7 结果产物
 
 - `test/result.json`：机器/AI 用，含 `sourceHash`（供 D14 判过期）、`summary`、逐用例 `cases`、`runtime`。
@@ -233,6 +221,18 @@ Java/Python 不声明该位，因为它们往中文路径写产物本来就正�
 - 两级：一级 = 用例状态列表（状态 + 耗时 + 输出字节），点开 → 二级 = 期望/实际并排 + 首个差异定位。
 - 打开时机默认「每次测试都弹」（配置 `oj.test.resultPage` 可改 `always|onFailure|never`）。
 - 过期判定：当前源文件哈希 ≠ `result.json.sourceHash` → 顶部标「代码已改动，结果可能已过期」。
+
+### 5.9 ASCII 中转（`asciiSafeOutput`）
+
+工具链可以声明「本工具链无法在非 ASCII 路径下写产物」。引擎遇到该声明 + 产物路径含非 ASCII 时：
+
+1. 把 `{output}` 指到纯 ASCII 暂存目录（`%TEMP%\vsoj-build\<随机>`）编译；
+2. 编译成功后把产物**复制回** `temp/`（保持 S5 布局语义：产物就在题目目录的 `temp/` 里）；
+3. 删掉暂存目录；`result.json` 的 `build.staged` 与报告都会说明「走了中转」。
+
+**为什么用声明式能力位而不是在引擎里判语言**：引擎依旧零语言特判（契约 C1），
+差异由工具链自己声明 —— 这与「编译型/解释型」的区别是同一套思路。
+Java/Python 不声明该位，因为它们往中文路径写产物本来就正常（已实测）。
 
 ---
 
