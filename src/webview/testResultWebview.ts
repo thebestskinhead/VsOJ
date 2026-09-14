@@ -254,7 +254,7 @@ function reasonHtml(m: ResultPageModel): string {
       <p>工具链「${escapeHtml(m.toolchain.label)}」需要这些命令，但都没找到：</p>
       <pre>${escapeHtml(missing.join('\n') || '（未声明）')}</pre>
       ${tried.length ? `<div class="sub">已经找过这些位置</div><pre>${escapeHtml(tried.join('\n'))}</pre>` : ''}
-      <p class="hint">装好编译器，或把安装目录加进 <code>oj.test.searchDirs</code>；也可以换一条工具链（<code>oj.test.toolchain</code>）。</p>
+      <p class="hint">装好编译器，或把安装目录加进 <code>oj.test.searchDirs</code>；也可以换一条工具链（<code>oj.test.toolchain</code>），或用命令「OJ: 编辑工具链配置」把候选写成绝对路径。</p>
     </section>`;
   }
 

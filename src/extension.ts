@@ -12,7 +12,7 @@ import {
   getKeepAliveIntervalMs, getSessionProbeIntervalMs, getAutoRelogin,
   getAutoReplaySubmit, isOfflineMode, isCacheEnabled, getCacheTtlMs, getStaleTtlMs,
   isProjectEnabled, isLazyInitEnabled, getSourceFileName, getTestResultPageMode,
-  getStatusPollInterval,
+  getStatusPollInterval, getToolchainsFile, getTestToolchainId, getTestSearchDirs, getTestLimits,
 } from './utils/config';
 import { ContestTreeProvider } from './views/contestTree';
 import { ProblemTreeProvider } from './views/problemTree';
@@ -23,6 +23,7 @@ import { SubmitWebview } from './webview/submitWebview';
 import { ProblemWebview } from './webview/problemWebview';
 import { StatusWebview } from './webview/statusWebview';
 import { TestResultWebview, resultPagePlan } from './webview/testResultWebview';
+import { ToolchainWebview } from './webview/toolchainWebview';
 import { LANGUAGE_EXT, ProblemBrief } from './types';
 import { initDebugChannel, showDebugChannel, clearDebugChannel, setDebugEnabled, isDebugEnabled, logInfo } from './utils/debug';
 import { McpServer } from './mcp/server';
@@ -41,6 +42,7 @@ import { buildInitDeps } from './workspace/wiring';
 import { openSourceInLeftColumn as openLeftSource } from './workspace/openSource';
 import { buildTestDeps, listSampleIndexes } from './test/wiring';
 import { LocalTestRunner, RunnerDeps, TestRunResult } from './test/runner';
+import { commonSearchDirs } from './test/toolchain';
 import { TestToolService } from './test/tools';
 import { collectProblemResources } from './workspace/resources';
 import { registerOjTasks, OjTasksHandle } from './test/tasks';
@@ -418,6 +420,34 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     readSource: (file) => readSourceText(file),
     log: (m) => logInfo(m),
   });
+
+  /**
+   * 工具链配置页（S6.8）。生效值 = 内置定义 + 工作区 `toolchains.json` 的覆盖，
+   * 页面把两者摆在一起改 —— 尤其是「命令到底探测到没有」，那是本地测试失败时
+   * 最难自己查的一环。保存只写改过的字段，内置模板的后续改进依然能继承。
+   */
+  const toolchainWebview = new ToolchainWebview({
+    filePath: () => {
+      const cfg = getToolchainsFile();
+      return path.isAbsolute(cfg) ? cfg : path.join(workspaceRoot(), cfg);
+    },
+    readFile: (file) => { try { return fs.readFileSync(file, 'utf8'); } catch { return undefined; } },
+    writeFile: (file, text) => {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, text, 'utf8');
+    },
+    openFile: (file) => {
+      void vscode.workspace.openTextDocument(vscode.Uri.file(file)).then(
+        (doc) => vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.Two }),
+        () => vscode.window.showWarningMessage(`打不开 ${file}：文件还不存在，先在页面上保存一次。`),
+      );
+    },
+    selectedToolchainId: () => getTestToolchainId(),
+    searchDirs: () => [...getTestSearchDirs(), ...commonSearchDirs()],
+    limits: () => getTestLimits(),
+    log: (m) => logInfo(m),
+  });
+  context.subscriptions.push(toolchainWebview);
 
   // ==========================================
   // 会话自愈编排
@@ -1432,6 +1462,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     vscode.commands.registerCommand('oj.test.run', async (item?: { problem?: ProblemBrief }) => {
       await runLocalTests(item);
+    })
+  );
+
+  // oj.test.editToolchains — 打开工具链配置页（改命令路径、加语言）
+  context.subscriptions.push(
+    vscode.commands.registerCommand('oj.test.editToolchains', () => {
+      if (!vscode.workspace.workspaceFolders?.length && !path.isAbsolute(getToolchainsFile())) {
+        void vscode.window.showWarningMessage('工具链配置存在工作区里，先打开一个文件夹。');
+        return;
+      }
+      toolchainWebview.show();
     })
   );
 

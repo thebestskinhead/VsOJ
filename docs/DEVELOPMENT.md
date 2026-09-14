@@ -8,7 +8,7 @@
 ```bash
 npm install
 npm run compile      # 编译
-npm test             # 编译 + 运行全部测试（25 套件 / 1297 项断言，无需 VS Code 运行时）
+npm test             # 编译 + 运行全部测试（27 套件 / 1415 项断言，无需 VS Code 运行时）
 npm run smoke:site   # 真实站点端到端冒烟（需要能访问目标 OJ）
 npm run test:cache   # 仅缓存层（布局 / 新鲜度 / 清理语义）
 npm run test:session # 仅会话层
@@ -64,7 +64,8 @@ VsOJ/
 │   │   ├── submitWebview.ts
 │   │   ├── problemWebview.ts
 │   │   ├── testResultWebview.ts   # 本地测试结果页
-│   │   └── statusWebview.ts       # 提交结果页
+│   │   ├── statusWebview.ts       # 提交结果页
+│   │   └── toolchainWebview.ts    # 工具链配置页
 │   ├── test/                 # 本地测试引擎
 │   │   ├── toolchain.ts      # 工具链模型 + 内置四套
 │   │   ├── compare.ts        # 严格逐字节比较 + 首个差异定位

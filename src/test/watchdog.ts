@@ -89,14 +89,59 @@ export function killTree(pid: number): void {
   }
 }
 
+/** 内存探测的底层实现（可注入，便于覆盖三个平台分支与回退路径） */
+export interface MemoryProbeIo {
+  platform: string;
+  /** 读 `/proc/<pid>/statm` 的第二列（驻留页数）；读不到就抛错 */
+  readStatmPages: (pid: number) => number;
+  /** `ps -o rss= -p <pid>` 的 KB 数；拿不到返回 undefined */
+  readPsRssKb: (pid: number) => number | undefined;
+  /** `tasklist` 的 KB 数；拿不到返回 undefined */
+  readTasklistKb: (pid: number) => number | undefined;
+  /** `/proc` 的页大小 */
+  pageSize: number;
+}
+
 /**
- * 默认内存探测：返回进程驻留内存（字节），取不到返回 undefined。
+ * 内存探测：返回进程驻留内存（字节），取不到返回 undefined。
  *
- * Windows 用 `tasklist`（比 wmic 存在性更广），POSIX 读 `/proc/<pid>/statm`。
+ * 三条路：Windows 用 `tasklist`（比 wmic 存在性更广）；Linux 读 `/proc/<pid>/statm`；
+ * macOS 没有 `/proc`，用 `ps -o rss=`。`/proc` 读不到时也回退到 `ps`，
+ * 这样容器里没挂 procfs 的场景同样能测到内存 —— 而内存闸失效是**静默**的
+ * （程序照跑不误，只是泄漏时不再被砍），所以宁可多一条兜底。
  */
-export function defaultMemoryProbe(pid: number): number | undefined {
-  if (!pid) { return undefined; }
-  if (IS_WINDOWS) {
+export function probeMemory(pid: number, io: MemoryProbeIo): number | undefined {
+  if (!pid || pid <= 0) { return undefined; }
+  if (io.platform === 'win32') {
+    const kb = io.readTasklistKb(pid);
+    return kb !== undefined && kb > 0 ? kb * 1024 : undefined;
+  }
+  if (io.platform !== 'darwin') {
+    try {
+      const pages = io.readStatmPages(pid);
+      if (isFinite(pages) && pages > 0) { return pages * io.pageSize; }
+    } catch { /* 没有 /proc（macOS、容器）→ 走 ps 兜底 */ }
+  }
+  const kb = io.readPsRssKb(pid);
+  return kb !== undefined && kb > 0 ? kb * 1024 : undefined;
+}
+
+/** 默认实现：真去问操作系统 */
+const defaultProbeIo: MemoryProbeIo = {
+  platform: process.platform,
+  pageSize: 4096,
+  readStatmPages: (pid) => {
+    const statm = fs.readFileSync(`/proc/${pid}/statm`, 'utf8').trim().split(/\s+/);
+    return Number(statm[1]);
+  },
+  readPsRssKb: (pid) => {
+    const r = spawnSync('ps', ['-o', 'rss=', '-p', String(pid)], { encoding: 'utf8', windowsHide: true });
+    if (r.status !== 0 || !r.stdout || !r.stdout.trim()) { return undefined; }
+    // `ps` 可能给多行（同一进程被多次命中），取第一行即可
+    const kb = Number(r.stdout.trim().split(/\s+/)[0]);
+    return isFinite(kb) ? kb : undefined;
+  },
+  readTasklistKb: (pid) => {
     const r = spawnSync('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], {
       windowsHide: true, encoding: 'utf8',
     });
@@ -105,15 +150,13 @@ export function defaultMemoryProbe(pid: number): number | undefined {
     const m = r.stdout.match(/,\s*"([\d.,]+)\s*K"\s*$/m);
     if (!m) { return undefined; }
     const kb = Number(m[1].replace(/[.,]/g, ''));
-    return isFinite(kb) ? kb * 1024 : undefined;
-  }
-  try {
-    const statm = fs.readFileSync(`/proc/${pid}/statm`, 'utf8').trim().split(/\s+/);
-    const pages = Number(statm[1]);
-    return isFinite(pages) ? pages * 4096 : undefined;
-  } catch {
-    return undefined;
-  }
+    return isFinite(kb) ? kb : undefined;
+  },
+};
+
+/** 默认内存探测（当前平台的真实现） */
+export function defaultMemoryProbe(pid: number): number | undefined {
+  return probeMemory(pid, defaultProbeIo);
 }
 
 /**

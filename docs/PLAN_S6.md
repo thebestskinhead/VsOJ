@@ -401,8 +401,8 @@ fresh_result(): GET status-ajax.php?solution_id=<sid>
 | 筛选 | 默认「只看本题」，纯客户端藏行（不动请求），可一键切「显示全部题目」 |
 | 详情 | 「结果」列可点开判题详情：编译错误取 `ceinfo.php`、其余取 `reinfo.php`（与站点那一列的链接一致），两页正文都在 `<pre id='errtxt'>` 里，一个解析函数够用 |
 
-**为什么这一页是本项目唯一开脚本的页面**：整页重载式的「刷新」做不到「就地更新」，
-而就地更新必须有人在客户端改 DOM（契约 C26 那条「零脚本」约束的是**本地测试结果页**，
+**为什么这一页要开脚本**：整页重载式的「刷新」做不到「就地更新」，
+而就地更新必须有人在客户端改 DOM（契约 C24 那条「零脚本」约束的是**本地测试结果页**，
 它的内容是程序输出，不该有执行面；这一页的内容是**站点表格**，脚本只干改格子这一件事）。
 代价是所有注入内容一律经 `utils/format.escapeHtml`（契约 C29）。
 
@@ -484,7 +484,7 @@ AI 侧要的是**测试类**工具，而 MCP 只有五个只读与配置类工�
 | S6.6 ✅ | 结果页 webview：两级明细、过期标记、零脚本、全通过不抢焦点 | `src/webview/testResultWebview.ts`（+ `runner.ts` 抽出 `casePreviews` / `runtimeText` 供报告与页面共用） | `test/test-result-page.test.js`（61） |
 | S6.6.1 ✅ | **提交结果页重写**（用户追加）：统一亮色样式 + 待判定行就地轮询（对齐站点 `auto_refresh.js`）、「结果」列可点开判题详情；自绘结果页取代原样嵌入站点 HTML + 链接代理脚本 | `src/webview/statusWebview.ts`、`src/api/submit.ts`、`src/utils/parser.ts`、`src/views/statusPanel.ts` | `test/status-webview.test.js`（136） |
 | S6.7 ✅ | **MCP 三工具**：`compile_problem` / `run_local_test` / `get_last_test_result`；`get_current_problem` 补 `local` 段（源文件/样例/题面图片/产物的本地路径） | `src/test/tools.ts`、`src/workspace/resources.ts`、`src/mcp/tools.ts`、`extension.ts` | `test/mcp-test-tools.test.js`（91，真实 `McpToolHandler` + 真 g++ 端到端） |
-| S6.8 | 工具链可视化编辑页 + macOS 内存探测回退 + 文档收口 | `src/webview/toolchainWebview.ts` 等 | `test/toolchain-page.test.js` |
+| S6.8 ✅ | **工具链配置页**：内置 + 覆盖的实际生效情况一页看完（含命令探测到哪个路径、缺哪个），页面上增删改；保存只写改过的字段、内置项可一键恢复默认；**macOS 内存探测回退**（`ps -o rss=`） | `src/webview/toolchainWebview.ts`、`src/test/watchdog.ts`、`src/extension.ts`、`package.json` | `test/toolchain-page.test.js`（90）、`test/watchdog.test.js`（28） |
 
 ---
 
@@ -559,6 +559,11 @@ S6 的优势是引擎本身不依赖 vscode，所以可以做**真端到端**：
 工具链路径通过环境变量注入（如 `VSOJ_TEST_GPP`），**找不到编译器时该套用例降级为 skip 并显式说明**，
 不伪装成通过。
 
+另有两套不依赖编译器的测试：`test/watchdog.test.js` 用注入的探测实现覆盖三条平台路径
+（Windows `tasklist` / Linux `/proc` / macOS `ps`）与 `/proc` 缺失时的回退，并真起进程验证
+时间闸与内存闸；`test/toolchain-page.test.js` 把「表单 → 保存计划 → 落盘 → 引擎读回」
+整条链走通（真写临时文件，而不是比对 HTML 字符串）。
+
 ---
 
 ## 9. 需要改动的文件清单
@@ -571,7 +576,7 @@ S6 的优势是引擎本身不依赖 vscode，所以可以做**真端到端**：
 - `src/webview/statusWebview.ts`（S6.6.1，替换 `statusPanel` 里原样嵌站点页面的 webview 档）
 - `src/test/tools.ts`（S6.7，MCP 三工具的服务层，零 vscode）、`src/workspace/resources.ts`（S6.7，题目本地路径清单）
 - `src/utils/testConfig.ts`（**未拆**：`config.ts` 停在 190 行，先不为了「避免膨胀」而拆）
-- `test/{toolchain,compare,runner,test-wiring,test-result-page,status-webview,mcp-test-tools,task-template,toolchain-page}.test.js`
+- `test/{toolchain,toolchain-page,compare,runner,test-wiring,test-result-page,status-webview,mcp-test-tools,watchdog}.test.js`
 
 **修改**
 

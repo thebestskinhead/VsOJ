@@ -376,6 +376,11 @@
         "command": "oj.test.run",
         "title": "OJ: 本地测试",
         "icon": "$(beaker)"
+      },
+      {
+        "command": "oj.test.editToolchains",
+        "title": "OJ: 编辑工具链配置",
+        "icon": "$(settings-gear)"
       }
     ],
     "keybindings": [

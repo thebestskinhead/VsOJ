@@ -44,6 +44,10 @@ OJ 在线判题平台 VS Code 插件，让你在 VS Code 内完成全部 OJ 操�
 }
 ```
 
+不想手写这份文件，就在命令面板跑「**OJ: 编辑工具链配置**」：每条工具链一行，能看到它认领哪些
+源文件、命令在这台机器上探测到了哪个路径、缺哪个命令，点开就能改，也能加新语言。
+「恢复默认」把某条改回内置的样子（那份覆盖随之移除）；改动只写进文件里被改过的字段。
+
 
 ## 命令清单
 
@@ -79,6 +83,7 @@ OJ 在线判题平台 VS Code 插件，让你在 VS Code 内完成全部 OJ 操�
 | `oj.test.compile` | — | 编译当前题目（按 `oj.test.reuseBuild` 决定是否复用上次产物） |
 | `oj.test.compileForce` | — | 强制重新编译（忽略复用配置） |
 | `oj.test.run` | — | 本地测试：编译 + 跑全部样例 + 判定，结果页展示 |
+| `oj.test.editToolchains` | — | 打开工具链配置页（改命令路径、加语言、恢复默认） |
 | `oj.debugShow` | — | 显示 Debug 日志（OutputChannel） |
 | `oj.debugToggle` | — | 启用/禁用 Debug 日志 |
 | `oj.debugClear` | — | 清空 Debug 日志 |

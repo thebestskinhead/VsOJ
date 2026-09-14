@@ -151,7 +151,7 @@
 | **S3** | 静态资源层（登录/提交页只调接口、不加载站点页面） | 由插件自绘的登录页 / 提交页达成，不另建 `media/` | ✅ |
 | **S4** | 运行期缓存刷新 + 离线模式 | 详见 `docs/PLAN_S4.md`（契约 / 阶段 / 测试） | ✅ |
 | **S5** | 比赛项目初始化（懒初始化 / 全量预取 / 左代码右题目 / 无工作区守卫） | `src/workspace/initializer.ts`、`guard.ts`、`wiring.ts`、`openSource.ts`；布局 v2；`test/{init,workspace-guard,project-tree,open-source}.test.js` | ✅ |
-| **S6** | 本地测试引擎 + MCP 扩展 | `src/test/*`、`src/config/*`、`src/workspace/resources.ts`、`src/webview/{testResult,status}Webview.ts`；**8 个 MCP 工具**（3 个测试类）；`docs/PLAN_S6.md`（剩工具链编辑页） | 🔶 |
+| **S6** | 本地测试引擎 + MCP 扩展 | `src/test/*`、`src/config/*`、`src/workspace/resources.ts`、`src/webview/{testResult,status,toolchain}Webview.ts`；**8 个 MCP 工具**（3 个测试类）；`docs/PLAN_S6.md` | ✅ |
 | **S7** | 状态页静态化 | 自绘 `StatusWebview`，`statusPanel` 的代理渲染下线 | ✅ |
 
 ### 测试与验证
@@ -210,8 +210,8 @@ S3,S4,S5 ─► S7
 | 站点为 HUSTOJ 定制版，响应体形态可能变化 | 失效判定**以「HTTP 状态 + 空体」为主信号**，字符串信号仅作辅助；判定集中在 `session/guard.ts` 单点，便于后续按登录态实测结果收紧 |
 | 心跳增加服务器负担 | 默认 4 分钟 / 单请求 85 B ≈ 每天 < 40 KB；提供开关与间隔配置 |
 | 缓存污染工作区 | 缓存根可配、`cache.enabled=false` 可全关；根目录自动写入 `.gitignore` 建议（不强制） |
-| 用户机器无编译环境 | 本地测试**以 exe 为输入**，插件不引入编译器依赖 |
-| 静态页面 CSP | `media/` 资源通过 `webview.asWebviewUri` + `localResourceRoots` 加载，避免内联 script 被 CSP 拦截 |
+| 用户机器无编译环境 | 插件不带任何编译器：缺工具链时给出「缺什么命令 + 探测过哪些位置」，并允许把命令路径写进 `.vsoj/toolchains.json`（页面上也能改） |
+| 自绘页面的资源加载 | 页面不引用任何外部资源（样式与脚本一律内联），并自带 `Content-Security-Policy` 声明；开脚本的只有提交结果页与工具链配置页两个，其余页面不开脚本 |
 
 ## 6. 不变更承诺
 

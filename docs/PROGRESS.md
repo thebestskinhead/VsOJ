@@ -23,6 +23,7 @@
 | S6.6.1 | 2026-09-14 | **提交结果页重写**：统一亮色样式 + 待判定行**就地轮询**（对齐站点 `auto_refresh.js`）、可点开判题详情；旧「原样嵌站点页面」下线 | `npm test` 24 套件；`test:status-webview` 136 项 |
 | S6.7 | 2026-09-14 | **MCP 三工具**：`compile_problem` / `run_local_test` / `get_last_test_result`；`get_current_problem` 补 `local` 段（源文件/样例/题面图片/产物的本地绝对路径）。AI 侧「改代码 → 本地验证 → 再改」闭环补上最后一环 | `npm test` 25 套件；`test:mcp-test-tools` 91 项（真实 `McpToolHandler` + 真 g++ 端到端） |
 | S6.7.1 | 2026-09-14 | **配置收敛**：摘掉三个未消费的配置项（`oj.defaultLanguage` / `oj.autoRefreshStatus` / `oj.statusRefreshInterval`）；Output 文本表格的自动刷新改用与结果页**同一套轮询**（`status-ajax` 逐条问待判定的提交、间隔 800ms 起步逐次翻倍封顶 8s），两者共用 `oj.statusPollInterval` | `npm test` 25 套件 / 1297 项断言 |
+| S6.8 | 2026-09-14 | **工具链配置页**（`oj.test.editToolchains`）：内置 + 覆盖的实际生效情况一页看完（来源、覆盖了哪些字段、命令探测到哪个路径 / 缺哪个），页面上增删改，保存只写改过的字段、内置项一键恢复默认；**macOS 内存探测回退**（无 `/proc` 时用 `ps -o rss=`） | `npm test` 27 套件 / 1415 项断言；`test:toolchain-page` 90 项、`test:watchdog` 28 项 |
 
 ---
 
@@ -483,6 +484,44 @@ MCP 那侧当时只有五个只读与配置类工具，缺的正是最后一环�
 
 ---
 
+## S6.8 — 工具链配置页 + macOS 内存探测回退（2026-09-14）
+
+**要补的是什么**：生效的工具链 = 内置定义 + 工作区 `.vsoj/toolchains.json` 的覆盖项。
+此前改工具链只有一条路 —— 手编那份 JSON，而写错了（id 打错、命令找不到、覆盖了哪些字段）
+要跑到本地测试失败才发现。这一阶段把「实际生效的是什么」摆到页面上。
+
+**三条取舍经用户拍板**：可视化编辑 + 保存（不是只读清单）、内置项**全字段可改 + 一键恢复默认**、
+保存**只写被改的字段**（沿用 C23 的部分覆盖语义）。
+
+**做了什么**
+
+- 新增 `src/webview/toolchainWebview.ts`：模型组装 + 保存计划 + 渲染 + 面板薄壳。
+  - `buildToolchainModel()`：内置 + 文件覆盖 + **命令探测**（复用引擎的 `resolveCommands`，
+    外加 `oj.test.searchDirs` 与通用安装目录）→ 页面模型；坏条目与坏 JSON 只记账、不抛。
+  - `planToolchainSave()`（纯函数）：内置项与内置形状一致 → 判定「从文件移除」，这正是
+    「恢复默认」的落点；有差异 → **只写差异字段**，`commands` 细到命令名（`commands.gpp`）；
+    非内置项写完整定义。任一条不合法 → 整份不落盘（C22）。
+  - 坏条目（缺字段 / id 重复）单独列出并**逐字段原样写回** —— 这条路径走 `JSON.stringify`，
+    不走 `serializeUserToolchains`（后者按字段白名单过滤，会把用户手写的未知字段吃掉）。
+  - 文件读不懂（JSON 语法错 / 结构不对）时禁用保存，期间绝不改写用户的文件。
+- `src/test/watchdog.ts`：内存探测抽成 `probeMemory(pid, io)`（可注入）+ 默认实现，
+  补上 **macOS 回退**（没有 `/proc` 时用 `ps -o rss=`）；`/proc` 读不到时同样回退 `ps`
+  （容器里没挂 procfs 也能测到）。内存闸失效是**静默**的 —— 程序照跑不误，只是泄漏时不再被砍 ——
+  所以宁可多一条兜底。
+- `src/extension.ts` + `package.json`：新增命令 `oj.test.editToolchains`（「OJ: 编辑工具链配置」）；
+  本地测试结果页「缺什么」那一屏的提示也指向它。
+- 这一页是继提交结果页之后**第二个开 `enableScripts` 的自绘页面**（C29 随之更新）：
+  页面脚本只读 DOM、不回写 HTML，唯一的数据注入点是 `#builtin-defaults` 那段 JSON
+  （其中 `<` 转成 `\u003c`，防止内容提前闭合脚本标签）。
+
+**验证**：`test/toolchain-page.test.js` 90 项（模型组装、保存计划、渲染转义、
+真写临时文件后用 `effectiveToolchains` 读回、面板保存链路）、
+`test/watchdog.test.js` 28 项（三条平台路径与 `/proc` 缺失时的回退、kill 进程树边界、
+时间闸与内存闸端到端真起进程）。`npm test` → **27 套件 / 1415 项断言全通过**；
+`test/theme.test.js` 的内联页面计数 7 → 8（新页面同样固定亮色）。
+
+---
+
 ## 比赛目录初始化：现状与缺口（S5 开工前评审 · 已全部闭环）
 
 > 本节是 S5 开工前的评审记录，**保留作为决策依据**。
@@ -543,7 +582,7 @@ MCP 那侧当时只有五个只读与配置类工具，缺的正是最后一环�
   （**20 条决策全部经用户拍板**、S5.0–S5.7 阶段切分、15 条行为契约）。
   核心形态：**懒初始化单题（默认）+ 侧边栏条目全量预取**，共用同一个 `ensureProblem()`；
   比赛目录建在 **workspace 可见根**（`<cid>-<标题>/`），题目目录用 `<字母>-<标题>/`。
-- 🔄 **S6 本地测试引擎 + MCP 扩展** —— 进行中。已完成 S6.0–S6.7：
+- ✅ **S6 本地测试引擎 + MCP 扩展** —— 已完成 S6.0–S6.8：
   - ✅ 引擎与工具链：`prepare` / `run` / `compare` 三步 + 三闸看门狗（`src/test/`）
   - ✅ 接线层 + 自定义任务（`oj` 类型）：编译 / 本地测试 / 强制重编译 / **跑一下**
   - ✅ 配置说明书与 AI 初始化：MCP `get_config_manual` / `init_config` + `docs/CONFIG.md`
@@ -551,7 +590,9 @@ MCP 那侧当时只有五个只读与配置类工具，缺的正是最后一环�
     统一亮色 + 待判定行就地轮询 / 可点开判题详情）
   - ✅ **MCP 三工具**（S6.7）：`compile_problem` / `run_local_test` / `get_last_test_result`，
     并把题目图片与样例的本地路径并进 `get_current_problem`（不另开读图工具）
-  - ⏳ 待做：**S6.8 工具链编辑页 + macOS 内存探测回退 + 文档收口**
+  - ✅ **工具链配置页**（S6.8）：内置 + 工作区覆盖一页看完（含命令探测结果），
+    页面上增删改；保存只写改过的字段、内置项可一键恢复默认；
+    顺带补上 macOS 的内存探测回退（`ps -o rss=`）
   - MCP 工具现状：共 **8 个**（5 个只读/配置类 + 3 个测试工具）。
 - **状态查看的三个形态**由 `oj.statusViewMode` 决定（结果页 / Output 文本表格 / 外部浏览器），
   前两者都用 `oj.statusPollInterval` 轮询待判定的提交：只问还没判完的那几条、
