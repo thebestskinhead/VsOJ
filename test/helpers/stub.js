@@ -38,6 +38,10 @@ function installVscodeStub(config = {}, options = {}) {
     show: () => {}, hide: () => {}, dispose: () => {}, replace: () => {},
   };
 
+  // 记录 executeCommand 调用 —— 用于断言 `setContext` 这类「只发命令、没有返回值」
+  // 的副作用（早前桩是空函数，导致「上下文没设」这类 bug 无法被测出来）
+  const commandLog = [];
+
   const vscodeStub = {
     workspace: {
       workspaceFolders: [{ uri: { scheme: 'file', fsPath: workspaceFolder } }],
@@ -94,7 +98,10 @@ function installVscodeStub(config = {}, options = {}) {
     ProgressLocation: { SourceControl: 1, Window: 10, Notification: 15 },
     StatusBarAlignment: { Left: 1, Right: 2 },
     ViewColumn: { One: 1, Two: 2 },
-    commands: { executeCommand: () => {}, registerCommand: () => ({ dispose: () => {} }) },
+    commands: {
+      executeCommand: async (cmd, ...args) => { commandLog.push({ cmd, args }); },
+      registerCommand: () => ({ dispose: () => {} }),
+    },
     tasks: { registerTaskProvider: () => ({ dispose: () => {} }) },
     Task: class {
       constructor(definition, scope, name, source, execution) {
@@ -124,7 +131,10 @@ function installVscodeStub(config = {}, options = {}) {
     id: 'vscode-stub', filename: 'vscode-stub', loaded: true, exports: vscodeStub,
   };
 
-  return { workspaceFolder, globalStorage, vscode: vscodeStub, config, root: path.dirname(__dirname) };
+  return {
+    workspaceFolder, globalStorage, vscode: vscodeStub, config, commandLog,
+    root: path.dirname(__dirname),
+  };
 }
 
 /** 极简断言器 */

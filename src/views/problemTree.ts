@@ -99,7 +99,6 @@ export class ProblemTreeProvider implements vscode.TreeDataProvider<ProblemTreeI
       if (e instanceof AccessError) {
         await this.state.setCurrentCid(undefined);
         await this.state.setCurrentPid(undefined);
-        await vscode.commands.executeCommand('setContext', 'oj.inContest', false);
         vscode.commands.executeCommand('oj.refreshContests');
         vscode.window.showErrorMessage(`[OJ] ${e.message}`);
         return [new ProblemTreeItem(e.message, 'error', vscode.TreeItemCollapsibleState.None)];

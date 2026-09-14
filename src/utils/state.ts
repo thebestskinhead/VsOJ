@@ -56,13 +56,33 @@ export class StateManager {
     return this.getFavorites().includes(cid);
   }
 
-  /** 当前比赛 ID */
+  /**
+   * 当前比赛 ID —— 「是否在比赛中」的**唯一真相**。
+   *
+   * 菜单 `when` 条件用的 context key `oj.inContest` 由它派生（见 `syncContestContext`），
+   * 视图层不再自己判断，避免出现两个真相。
+   */
   getCurrentCid(): string | undefined {
     return this.context.globalState.get<string>(KEYS.CURRENT_CID);
   }
 
   async setCurrentCid(cid: string | undefined): Promise<void> {
     await this.context.globalState.update(KEYS.CURRENT_CID, cid);
+    // 派生写在 setter 里：只要 cid 变了，上下文必然跟着变。
+    // 早前是每个调用点各写一句 setContext，漏掉 activate 那一处 ——
+    // 重启后 globalState 里的 cid 还在、题目列表照常显示，标题栏按钮却因
+    // context key 未恢复而全部消失（`when` 条件不成立）。
+    await this.syncContestContext();
+  }
+
+  /**
+   * 把「是否在比赛中」推给 VS Code 的 context key（`view/title` 菜单的 `when` 用）。
+   *
+   * `globalState` 是持久的，context key 不是 —— 所以**启动时必须显式补一次**，
+   * 否则重启 VS Code 后比赛状态「看着还在、按钮却没了」。
+   */
+  async syncContestContext(): Promise<void> {
+    await vscode.commands.executeCommand('setContext', 'oj.inContest', !!this.getCurrentCid());
   }
 
   /** 当前题目 ID */

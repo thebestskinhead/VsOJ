@@ -18,6 +18,7 @@
 | S6.3 | 2026-09-14 | 测试接线层：7 个 `oj.test.*` 配置项、选工具链、发现样例、命令与右键菜单 | `npm run test:wiring` 44 项 |
 | S6.4 | 2026-09-14 | 自定义任务（`oj` 类型）+ 终端桥：编译 / 本地测试 / 强制重编译 / **跑一下** | `npm run test:tasks` 43 项（真实 g++ 端到端） |
 | S6.5 | 2026-09-14 | **配置说明书 + AI 初始化工具**（MCP：`get_config_manual` / `init_config`），`docs/CONFIG.md` 随插件发布 | `npm test` 21 套件；`test:config-manual` 44、`test:config-writer` 85、`test:config-tools` 54 |
+| S6.5.1 | 2026-09-14 | **修**：题目列表标题栏按钮重启后全消失（`oj.inContest` 派生 + 启动恢复） | `npm test` 22 套件；`test:context-sync` 13 项 |
 
 ---
 
@@ -277,6 +278,35 @@ axios 会自动跟随重定向 —— 而**提交成功后站点同样 302 到 `
   命令解析失败要列「探测过哪些位置」，否则 AI 只能靠猜。
 - **自动纠正必须留痕**：省前缀、大小写能自动修，但要出提示 ——
   静默纠正会让 AI 以为自己写对了，这个错下次还会犯。
+
+---
+
+## S6.5.1 — 题目列表标题栏按钮「全没了」（2026-09-14 · 缺陷修复）
+
+**现象**：题目列表还在（题目条目正常显示），但视图标题栏上那排按钮
+（强制刷新全部缓存 / 刷新题目列表 / 退出比赛）**一个都不显示**，连 `…` 都没有。
+
+**根因**：`view/title` 里题目列表这三个按钮的 `when` **全都要求 `oj.inContest`**，
+而这个 context key 只在「进入比赛」等运行时命令里设置；`cid` 却存在 `globalState` 里
+（跨会话持久）。于是**重启 / 重载窗口后**：`cid` 还活着 → 题目列表照常渲染，
+context key 回到未定义 → 三个按钮的 `when` 全部不成立 → 标题栏空白。
+
+本质是**一体两写**：每个调用点各写一句 `setContext('oj.inContest', …)`，
+`activate` 漏了那一处（`oj.loggedIn` 有恢复，`oj.inContest` 没有）。
+
+**修复**（单一真相源）
+- `StateManager.setCurrentCid()` 内部派生 context —— 写 `cid` 必然带动 `when` 条件；
+  新增 `syncContestContext()` 供启动时补推一次（`globalState` 持久、context key 不持久）。
+- `activate` 里补 `syncContestContext()`；顺带把**从未被调用**的 `syncOfflineContext()`
+  接上（启动 + `oj.cache` 配置变更），让 `!oj.offline` 条件真的有意义。
+- 删掉视图/命令层 5 处手写 `setContext('oj.inContest', …)`，只留 `state.ts` 一处。
+- 顺带修：`oj.logout` 原本只设 `inContest=false` 而不清 `cid`，登出后重启会「仍在比赛」——
+  现在登出即清 `cid`/`pid`。
+
+**验证**：新增 `test/context-sync.test.js`（13 项）：cid↔上下文双向派生、启动恢复、
+无 cid 不误报、静态断言「inContest 只允许从 state.ts 发出」、
+「`syncOfflineContext` 不得再变死代码」、「logout 清 cid」。
+`npm test` → **22 套件全通过**。
 
 ---
 

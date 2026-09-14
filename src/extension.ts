@@ -118,6 +118,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
       if (e.affectsConfiguration('oj.workspace.root') || e.affectsConfiguration('oj.cache')) {
         cache.rebind();
+        // 离线开关（oj.cache.offline）影响题目列表标题栏的按钮可见性，改了要立刻反映
+        void syncOfflineContext();
         logInfo('[OJ] 缓存层已按新配置重新绑定');
       }
       if (e.affectsConfiguration('oj.session')) {
@@ -496,7 +498,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const replayed = await sessionGuard.replay(async (intent) => {
       await state.setCurrentCid(intent.cid);
       await state.setCurrentPid(intent.pid);
-      await vscode.commands.executeCommand('setContext', 'oj.inContest', true);
       problemTreeProvider.refresh();
 
       // 自动选择刚才的题目
@@ -562,10 +563,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         await auth.logout();
         sessionKeeper.stop();
         await sessionGuard.clearPending();
+        // 登出即离开比赛：清掉 cid 才有「不在比赛中」的上下文，
+        // 否则残留的 cid 会在下次启动被当成「还在比赛」
+        await state.setCurrentCid(undefined);
+        await state.setCurrentPid(undefined);
         renderSessionStatus();
         contestTreeProvider.refresh();
         problemTreeProvider.refresh();
-        await vscode.commands.executeCommand('setContext', 'oj.inContest', false);
         vscode.window.showInformationMessage('[OJ] 已登出');
       } catch (e: any) {
         vscode.window.showErrorMessage(`登出失败: ${e.message}`);
@@ -640,7 +644,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('oj.enterContest', async (cid: string) => {
       try {
         await state.setCurrentCid(cid);
-        await vscode.commands.executeCommand('setContext', 'oj.inContest', true);
         // 「暂不」只管本次会话：重新进入比赛时条目再出现一次（D19）
         initDismissals.onEnterContest(cid);
         problemTreeProvider.refresh();
@@ -684,7 +687,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         // 进入比赛
         await state.setCurrentCid(cid);
         await state.setCurrentPid(pid);
-        await vscode.commands.executeCommand('setContext', 'oj.inContest', true);
         problemTreeProvider.refresh();
         vscode.window.showInformationMessage(`[OJ] 已进入比赛 ${cid}，定位题目 ${pid}`);
 
@@ -701,7 +703,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('oj.exitContest', async () => {
       await state.setCurrentCid(undefined);
       await state.setCurrentPid(undefined);
-      await vscode.commands.executeCommand('setContext', 'oj.inContest', false);
       problemTreeProvider.refresh();
       statusPanel.dispose();
       vscode.window.showInformationMessage('[OJ] 已退出比赛');
@@ -1540,6 +1541,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   await restoreSession();
   // 恢复完成后才允许 TreeView 加载数据，避免启动竞态
   contestTreeProvider.setReady();
+
+  // 把持久化状态重新推给 context key。
+  // globalState 里的 cid / 离线开关是活的，但 context key 每次启动都是空的：
+  // 不补这一步，重启后「题目列表有内容，标题栏按钮却全没了」——
+  // 因为 `view/title` 那三个按钮的 when 条件全都要求 oj.inContest。
+  await state.syncContestContext();
+  await syncOfflineContext();
+
   // 登录态有效则启动保活心跳
   startKeeperIfNeeded();
 
