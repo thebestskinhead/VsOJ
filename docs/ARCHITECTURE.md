@@ -126,10 +126,6 @@ extension.ts ── 组合根：构造服务 → 注册命令 → 装配 TreeVie
 
 ### 3.4 MCP 扩展要点（G7）
 
-> **本节已按 S6.7 落地情况改写。** S0 时的设想是「`get_problem_assets` 返回 base64 +
-> 让 `run_local_test` 生成 `.vscode/tasks.json` 里的 `test/build.sh` / `test/run.sh`、
-> 以编译好的 exe 为统一输入」—— 那三条后来都被否掉了，原因见本节末尾。
-
 当前 MCP 共 **8 个**工具：5 个只读 / 配置类 + 3 个测试类。
 
 | 工具 | 输入 | 输出 | 落地于 |
@@ -143,20 +139,20 @@ extension.ts ── 组合根：构造服务 → 注册命令 → 装配 TreeVie
 | `run_local_test` | `cid?, pid?, rebuild?` | 与 `report.md` 逐字一致的报告文本 | S6.7 |
 | `get_last_test_result` | `cid?, pid?, format?` | 上次报告 + 过期标记（**不重跑**） | S6.7 |
 
-**三条被否掉的 S0 设想，以及为什么**
+**三条不采用的设想，以及为什么**
 
 1. ~~图片内联 base64~~ → **只给本地路径**（决策 D11）。图片是**静态资源**，
    已经落盘在 `problems/<pid>/assets/`（初始化这题时抓的，离线也在），
    再搬一遍二进制只是浪费 token；也不需要「读图片」这个工具 —— 路径就够了。
-   于是 `get_problem_assets` / `get_problem_samples` 两个工具**取消**，
+   因此不设 `get_problem_assets` / `get_problem_samples` 两个工具，
    路径并进 `get_current_problem` 的 `local` 段（契约 C33）。
 2. ~~由插件生成 `.vscode/tasks.json` 里的 `build.sh` / `run.sh`~~ → **不写用户文件**。
    那样会把命令**固化**进任务定义，而 Windows / Linux / macOS 的命令并不相同，
-   同一份 `tasks.json` 不可能三平台通用（契约 C17）。现在命令**在运行时由工具链层解析**：
+   同一份 `tasks.json` 不可能三平台通用（契约 C17）。命令改为**在运行时由工具链层解析**：
    `oj` 类型的自定义任务只声明「做什么」，具体命令每次现算。
 3. ~~以「编译好的 exe」为统一输入~~ → **输入是「题目 + 工具链」**。
    「统一输入是 exe」等于把解释型语言排除在外（Python 没有 exe），
-   与「引入工具链屏蔽编译/解释差异」的初衷冲突。现在引擎只认 `ToolchainDef` 的
+   与「引入工具链屏蔽编译/解释差异」的初衷冲突。引擎只认 `ToolchainDef` 的
    `kind` 与命令模板，`prepare` 对解释型是空操作、`runnable` 就是源文件本身（契约 C2）。
 
 **两条通道（用户决策）**：只保留 **VS Code Task + MCP**。曾考虑直连
@@ -174,14 +170,14 @@ extension.ts ── 组合根：构造服务 → 注册命令 → 装配 TreeVie
 | **S3** | 静态资源层 | `media/login.html`、`media/submit.html`、`media/common.css`、`media/*.js`，webview 改为 `asWebviewUri` 加载 | 待办 |
 | **S4** | 运行期缓存刷新 + 离线模式 | 详见 `docs/PLAN_S4.md`（契约 / 阶段 / 测试） | ✅ |
 | **S5** | 比赛项目初始化（懒初始化 / 全量预取 / 左代码右题目 / 无工作区守卫） | `src/workspace/initializer.ts`、`guard.ts`、`wiring.ts`、`openSource.ts`；布局 v2；`test/{init,workspace-guard,project-tree,open-source}.test.js` | ✅ |
-| **S6** | 本地测试引擎 + MCP 扩展 | `src/test/*`、`src/config/*`、`src/workspace/resources.ts`、`src/webview/{testResult,status}Webview.ts`；**8 个 MCP 工具**（3 个测试类）；`docs/PLAN_S6.md`（S6.0–S6.7 已闭环，剩工具链编辑页） | 🔶 |
-| **S7** | 状态页静态化 | 由 S6.6.1 提前完成：`statusPanel` 的代理渲染下线，改为自绘 `StatusWebview` | ✅ |
+| **S6** | 本地测试引擎 + MCP 扩展 | `src/test/*`、`src/config/*`、`src/workspace/resources.ts`、`src/webview/{testResult,status}Webview.ts`；**8 个 MCP 工具**（3 个测试类）；`docs/PLAN_S6.md`（剩工具链编辑页） | 🔶 |
+| **S7** | 状态页静态化 | 自绘 `StatusWebview`，`statusPanel` 的代理渲染下线 | ✅ |
 
 ### 测试与验证
 
 `npm test` 一次性跑完全部套件（**25 套件 / 1298 项断言**），全部脱离 VS Code 运行时
-（`vscode` 模块桩 + 本地 HTTP 服务器）。S6 之后多了一条更强的做法：
-**引擎套件不 mock 编译与执行** —— 用本机真实的 g++ 编译真实源码、跑真实样例、比真实字节
+（`vscode` 模块桩 + 本地 HTTP 服务器）。**引擎套件不 mock 编译与执行** ——
+用本机真实的 g++ 编译真实源码、跑真实样例、比真实字节
 （找不到编译器时该组用例降级为 skip 并说明，不伪装成通过）。
 
 | 套件 | 断言数 | 覆盖 |

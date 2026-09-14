@@ -239,8 +239,8 @@ renderResultPage()                                          ← D12/D13
    文案口径上分叉。
 3. **全通过不抢焦点**（C26）：这是对 D13「弹出并聚焦」的细化 —— 刷题时用户多半正在改代码，
    页面自己刷新就好；只有失败或没跑起来才值得把光标夺过去。
-4. **「没能开始」也要有页面**：缺工具链 / 编译失败 / 没有用例，原先只弹一句警告。
-   现在这三种情况各有一屏：缺什么命令、探测过哪些位置、编译器原文、以及「去哪拿样例」。
+4. **「没能开始」也要有页面**：缺工具链 / 编译失败 / 没有用例三种情况各有一屏 ——
+   缺什么命令、探测过哪些位置、编译器原文、以及「去哪拿样例」，而不是只弹一句警告。
 
 ### 5.9 非 ASCII 产物路径：相对路径为主，跨盘才退回中转（`asciiSafeOutput`）
 
@@ -425,10 +425,10 @@ fresh_result(): GET status-ajax.php?solution_id=<sid>
 
 ### 5.13 MCP 三工具（S6.7）—— 为什么是这三个，以及三条约束
 
-S6 的动机里写着「让 AI 也能跑这条路，形成『AI 改代码 → 本地验证 → 再改』的闭环」
-（§1）。但 S6.0–S6.6.2 交付的全是**给人用的**入口（命令面板 / 右键 / Task / 结果页），
-MCP 那一侧当时只有五个只读与配置类工具（`get_contest_problems` / `get_current_problem` /
-`get_contest_list` / `get_config_manual` / `init_config`）—— 闭环缺的正是最后一环。
+S6 的动机是「让 AI 也能跑这条路，形成『AI 改代码 → 本地验证 → 再改』的闭环」（§1）。
+AI 侧要的是**测试类**工具，而 MCP 只有五个只读与配置类工具
+（`get_contest_problems` / `get_current_problem` / `get_contest_list` /
+`get_config_manual` / `init_config`）—— 闭环缺的正是最后一环。
 
 **工具粒度由用户拍板**：只做三个，且**不为图片/样例另开工具**。
 
@@ -456,22 +456,19 @@ MCP 那一侧当时只有五个只读与配置类工具（`get_contest_problems`
    `available:false` + 「去侧边栏进入这场比赛」，而**不是**让取题目整个失败 ——
    题面本身在没建目录时仍然有价值。
 
-**为「读最近结果」放宽的一处签名**：`buildReport(r, deps)` 原先要整份 `RunnerDeps`，
-实际只用到 `tempDir` + `cases` 两项，于是放宽为 `Pick<RunnerDeps, 'tempDir' | 'cases'>`。
-理由不是为了好看：MCP 侧要**在没有引擎实例的情况下**重渲染报告（报告被删时），
-它手上只有题目目录与样例路径，凑不出（也不该凑）工具链与命令解析那几项。
+**`buildReport` 只要求两项**：`deps` 的类型是 `Pick<RunnerDeps, 'tempDir' | 'cases'>`
+（报告只用到这两项）。理由不是为了好看：MCP 侧要**在没有引擎实例的情况下**重渲染报告
+（报告被删时），它手上只有题目目录与样例路径，凑不出（也不该凑）工具链与命令解析那几项。
 
 **一处刻意的重复**：`resolveTarget()` 与 `get_contest_problems` 的「不传就用当前」是同一套逻辑，
 但 MCP 侧多一条「当前打开的是题面（`problemWebviewRef.current`）优先于 `globalState`」——
 它更贴近「他正在看哪道题」。这份判断只存在于读侧，不涉及写入，暂不强行合并。
 
-**一个只有真跑才会暴露的坑（已修）**：`forceRebuild` 的**三态**语义。
-`buildTestDeps` 用 `opts.forceRebuild ?? !isBuildReuseEnabled()` 决定复用与否，
-所以「不传」与「传 `false`」并不等价 —— 后者是**显式要求不复用**。
-最初写成 `forceRebuild: args?.rebuild === true`（永远传一个布尔值），
-结果 `oj.test.reuseBuild` 被静默压掉，MCP 与命令面板行为相反
-（配置说不复用、MCP 却复用了上次产物）。现在「没传 / 传 `false`」一律当**没有意见**，
-让配置说了算；`rebuild: true` 才是强制重编。
+**`rebuild` 必须保持三态语义**：`buildTestDeps` 用
+`opts.forceRebuild ?? !isBuildReuseEnabled()` 决定是否复用，所以「不传」与「传 `false`」
+并不等价 —— 后者是**显式要求不复用**。工具层只在 `rebuild === true` 时才传这个字段；
+写成 `forceRebuild: args?.rebuild === true`（永远传一个布尔值）就会把
+`oj.test.reuseBuild` 静默压掉，MCP 与命令面板行为相反（配置说不复用、MCP 却复用了上次产物）。
 
 ---
 
@@ -487,7 +484,7 @@ MCP 那一侧当时只有五个只读与配置类工具（`get_contest_problems`
 | S6.4 ✅ | 自定义任务（`oj` 类型）+ 终端桥：编译 / 本地测试 / 强制重编译 / **跑一下** | `src/test/tasks.ts`、`src/test/terminal.ts` | `test/tasks.test.js`（43，真实 g++ 端到端） |
 | S6.5 ✅ | **配置说明书 + AI 初始化工具**（用户追加）：`get_config_manual` / `init_config`，说明书生成与漂移断言 | `src/config/manual.ts`、`writer.ts`、`tools.ts`、`wiring.ts`、`scripts/gen-config-docs.js` | `test/config-manual.test.js`（44）、`test/config-writer.test.js`（85）、`test/config-tools.test.js`（54） |
 | S6.6 ✅ | 结果页 webview：两级明细、过期标记、零脚本、全通过不抢焦点 | `src/webview/testResultWebview.ts`（+ `runner.ts` 抽出 `casePreviews` / `runtimeText` 供报告与页面共用） | `test/test-result-page.test.js`（61） |
-| S6.6.1 ✅ | **提交结果页重写**（用户追加）：统一亮色样式 + 待判定行就地轮询（对齐站点 `auto_refresh.js`）、「结果」列可点开判题详情；旧实现（原样塞站点 HTML + 链接代理脚本）下线 | `src/webview/statusWebview.ts`、`src/api/submit.ts`、`src/utils/parser.ts`、`src/views/statusPanel.ts` | `test/status-webview.test.js`（136） |
+| S6.6.1 ✅ | **提交结果页重写**（用户追加）：统一亮色样式 + 待判定行就地轮询（对齐站点 `auto_refresh.js`）、「结果」列可点开判题详情；自绘结果页取代原样嵌入站点 HTML + 链接代理脚本 | `src/webview/statusWebview.ts`、`src/api/submit.ts`、`src/utils/parser.ts`、`src/views/statusPanel.ts` | `test/status-webview.test.js`（136） |
 | S6.7 ✅ | **MCP 三工具**：`compile_problem` / `run_local_test` / `get_last_test_result`；`get_current_problem` 补 `local` 段（源文件/样例/题面图片/产物的本地路径） | `src/test/tools.ts`、`src/workspace/resources.ts`、`src/mcp/tools.ts`、`extension.ts` | `test/mcp-test-tools.test.js`（91，真实 `McpToolHandler` + 真 g++ 端到端） |
 | S6.8 | 工具链可视化编辑页 + macOS 内存探测回退 + 文档收口 | `src/webview/toolchainWebview.ts` 等 | `test/toolchain-page.test.js` |
 
