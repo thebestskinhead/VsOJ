@@ -12,7 +12,14 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 
-/** 安装 `vscode` 模块桩。必须在 require 业务模块之前调用。 */
+/**
+ * 安装 `vscode` 模块桩。必须在 require 业务模块之前调用。
+ *
+ * 配置键**两种写法都认**（`'cache.enabled'` 与 `'oj.cache.enabled'`）：
+ * 业务代码走的是 `getConfiguration('oj').get('cache.enabled')`，但测试里带前缀写更接近
+ * settings.json 的样子 —— 早先只认无前缀，导致带前缀的配置静默失效（取到默认值），
+ * 这种「配置写了却没用上」的假通过最难查。
+ */
 function installVscodeStub(config = {}, options = {}) {
   const workspaceFolder = options.workspaceFolder
     || path.join(os.tmpdir(), `vsoj-test-ws-${process.pid}`);
@@ -34,7 +41,13 @@ function installVscodeStub(config = {}, options = {}) {
   const vscodeStub = {
     workspace: {
       workspaceFolders: [{ uri: { scheme: 'file', fsPath: workspaceFolder } }],
-      getConfiguration: () => ({ get: (k, d) => (k in config ? config[k] : d) }),
+      getConfiguration: () => ({
+        get: (k, d) => {
+          if (k in config) { return config[k]; }
+          if (`oj.${k}` in config) { return config[`oj.${k}`]; }
+          return d;
+        },
+      }),
       textDocuments: [],
       fs: {
         readFile: (uri) => fs.promises.readFile(uri.fsPath),
@@ -47,6 +60,10 @@ function installVscodeStub(config = {}, options = {}) {
       showInformationMessage: async () => undefined,
       showWarningMessage: async () => undefined,
       showErrorMessage: async () => undefined,
+      withProgress: async (_opts, task) => task(
+        { report: () => {} },
+        { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => {} }) },
+      ),
       createWebviewPanel: () => ({
         webview: { postMessage: () => {}, onDidReceiveMessage: () => {}, asWebviewUri: (u) => u },
         onDidDispose: () => {}, reveal: () => {}, dispose: () => {},

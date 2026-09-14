@@ -85,7 +85,7 @@ export function builtinToolchains(): ToolchainDef[] {
       commands: { gpp: ['g++'] },
       compile: '"{gpp}" -O2 -std=c++17 -o "{output}" "{source}"',
       run: '"{runnable}"',
-      // MinGW 的 ld 在中文路径下写不出产物（实测），必须走 ASCII 中转
+      // MinGW 的 ld 写不出「含非 ASCII 的产物路径」（实测），引擎为此改走相对路径（见 runner.ts 的 relativeArg）
       asciiSafeOutput: true,
       builtin: true,
     },

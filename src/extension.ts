@@ -34,6 +34,8 @@ import { formatBytes, numToLetter } from './utils/format';
 import { ProblemInitializer } from './workspace/initializer';
 import { buildInitDeps } from './workspace/wiring';
 import { openSourceInLeftColumn as openLeftSource } from './workspace/openSource';
+import { buildTestDeps } from './test/wiring';
+import { LocalTestRunner, RunnerDeps, TestRunResult } from './test/runner';
 import {
   InitEntryDismissals, NO_FOLDER_TEXT, decideOpenProblem, decideSubmit, makeFacts,
 } from './workspace/guard';
@@ -1173,6 +1175,142 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       vscode.window.showInformationMessage(
         `[OJ] 已清理 ${done} 场比赛的缓存，释放约 ${formatBytes(bytes)}`,
       );
+    })
+  );
+
+  // ==========================================
+  // 本地测试（S6）
+  // ==========================================
+
+  /** 「要对哪道题动手」：题目条目右键 → 当前打开的题目 → 都说不清就不要瞎猜 */
+  function resolveProblemTarget(
+    item?: { problem?: ProblemBrief },
+  ): { cid: string; pid: string; title: string } | undefined {
+    const p = item?.problem;
+    if (p && p.cid !== undefined && p.pid !== undefined) {
+      return { cid: String(p.cid), pid: String(p.pid), title: p.title ?? '' };
+    }
+    const cur = problemWebviewRef?.current;
+    if (cur?.cid && cur?.pid !== undefined) {
+      return { cid: String(cur.cid), pid: String(cur.pid), title: '' };
+    }
+    return undefined;
+  }
+
+  /**
+   * 测试类命令的公共前半段：定位题目 → 装配依赖 → 交给回调。
+   *
+   * `forceRebuild` 三态：`undefined` = 按 `oj.test.reuseBuild` 走；`true` = 无视配置强制重编。
+   */
+  async function withTestDeps(
+    item: { problem?: ProblemBrief } | undefined,
+    title: string,
+    forceRebuild: boolean | undefined,
+    fn: (deps: RunnerDeps, token: vscode.CancellationToken) => Promise<void>,
+  ): Promise<void> {
+    const target = resolveProblemTarget(item);
+    if (!target) {
+      void vscode.window.showWarningMessage('[OJ] 请先在侧边栏的题目条目上右键运行，或先打开这道题的题面。');
+      return;
+    }
+    const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+
+    await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title, cancellable: true },
+      async (_progress, token) => {
+        const built = await buildTestDeps({
+          store: cache, cid: target.cid, pid: target.pid,
+          workspaceRoot: wsRoot, title: target.title,
+          forceRebuild, log: logInfo,
+        });
+        if (!built.ok) {
+          void vscode.window.showWarningMessage(`[OJ] ${built.error}`);
+          return;
+        }
+        for (const n of built.notes) { logInfo(`[test] ${n}`); }
+        built.deps.isCancelled = () => token.isCancellationRequested;
+        await fn(built.deps, token);
+      },
+    );
+  }
+
+  /** 相对工作区根的路径，便于在消息里显示（不在工作区内则给绝对路径） */
+  function displayPath(p: string): string {
+    const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+    return wsRoot ? path.relative(wsRoot, p) || p : p;
+  }
+
+  /** 编译（不判定、不跑样例）；失败时把编译器原文送进 Debug 频道并弹出来 */
+  async function compileOnly(item: unknown, forceRebuild: boolean | undefined): Promise<void> {
+    await withTestDeps(item as { problem?: ProblemBrief }, '[OJ] 正在编译…', forceRebuild, async (deps) => {
+      const r = await new LocalTestRunner(deps).prepareOnly();
+      if (!r.ok) {
+        logInfo(`[test] 编译失败：\n${r.message}`);
+        showDebugChannel();
+        void vscode.window.showErrorMessage('[OJ] 编译失败：编译器输出见「OJ Debug」频道。');
+        return;
+      }
+      logInfo(`[test] 编译成功：${r.build.command}${r.build.reused ? '（复用上次产物）' : ''}`);
+      void vscode.window.showInformationMessage(
+        `[OJ] 编译成功${r.build.reused ? '（复用上次产物）' : `（${r.build.durationMs} ms）`}：`
+        + displayPath(r.build.runnable),
+      );
+    });
+  }
+
+  /** 本地测试：编译 + 跑样例 + 逐例判定 + 落盘报告 */
+  async function runLocalTests(item: unknown): Promise<void> {
+    await withTestDeps(item as { problem?: ProblemBrief }, '[OJ] 正在本地测试…', undefined, async (deps) => {
+      const r: TestRunResult = await new LocalTestRunner(deps).run();
+      const relReport = r.reportFile ? displayPath(r.reportFile) : '';
+      const summary = `共 ${r.summary.total} 组，通过 ${r.summary.passed}，不通过 ${r.summary.failed}`
+        + (r.summary.skipped ? `，跳过 ${r.summary.skipped}` : '');
+
+      logInfo([
+        `[test] ${summary}`,
+        `[test] 编译：${r.build.reused ? '复用上次产物' : `${r.build.durationMs} ms`}（${r.build.command}）`,
+        ...r.cases.map((c) => `[test] 用例 ${c.index}：${c.verdict === 'pass' ? '通过' : '不通过'}`
+          + `（${c.runtime.durationMs} ms${c.diff ? ` · ${c.diff.description}` : ''}）`),
+        ...r.skipped.map((s) => `[test] 跳过用例 ${s.index}：${s.reason}`),
+      ].join('\n'));
+
+      if (!r.ok) {
+        showDebugChannel();
+        void vscode.window.showErrorMessage(
+          `[OJ] ${r.build.ok ? summary : '测试没能跑起来'}` + (relReport ? `　报告：${relReport}` : ''),
+        );
+        return;
+      }
+
+      if (r.summary.failed === 0) {
+        void vscode.window.showInformationMessage(`[OJ] ${summary}：全部通过`);
+        return;
+      }
+      const pick = await vscode.window.showWarningMessage(`[OJ] ${summary}`, '打开报告');
+      if (pick === '打开报告' && r.reportFile) {
+        await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(r.reportFile));
+      }
+    });
+  }
+
+  // oj.test.compile — 编译当前题目（按配置决定是否复用产物）
+  context.subscriptions.push(
+    vscode.commands.registerCommand('oj.test.compile', async (item?: { problem?: ProblemBrief }) => {
+      await compileOnly(item, undefined);
+    })
+  );
+
+  // oj.test.compileForce — 无视复用配置，强制重新编译
+  context.subscriptions.push(
+    vscode.commands.registerCommand('oj.test.compileForce', async (item?: { problem?: ProblemBrief }) => {
+      await compileOnly(item, true);
+    })
+  );
+
+  // oj.test.run — 编译 + 跑样例 + 判定
+  context.subscriptions.push(
+    vscode.commands.registerCommand('oj.test.run', async (item?: { problem?: ProblemBrief }) => {
+      await runLocalTests(item);
     })
   );
 

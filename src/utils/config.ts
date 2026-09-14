@@ -95,6 +95,57 @@ export function getSourceFileName(): string {
   return v || 'main.cpp';
 }
 
+// ============================================================
+// 本地测试（S6）
+// ============================================================
+
+/** 选中的工具链 id；`auto` = 按源文件扩展名自动匹配 */
+export function getTestToolchainId(): string {
+  const v = getConfig().get<string>('test.toolchain', 'auto').trim();
+  return v || 'auto';
+}
+
+/** `toolchains.json` 的位置（相对工作区根，或绝对路径） */
+export function getToolchainsFile(): string {
+  const v = getConfig().get<string>('test.toolchainsFile', '.vsoj/toolchains.json').trim();
+  return v || '.vsoj/toolchains.json';
+}
+
+/**
+ * 额外的命令搜索目录。
+ *
+ * 内置只搜通用位置（`C:\mingw64\bin`、`/usr/bin`…），本机便携环境/多版本目录写这里，
+ * 也可以直接在 toolchains.json 里把命令写成绝对路径。
+ */
+export function getTestSearchDirs(): string[] {
+  const v = getConfig().get<string[]>('test.searchDirs', []) || [];
+  return v.filter((x) => typeof x === 'string' && !!x.trim()).map((x) => x.trim());
+}
+
+/**
+ * 产物复用开关。
+ *
+ * 默认 **关**（= 每次重新编译）：刷题时「调试到的不是我刚改的代码」比多等两秒难受得多。
+ * 开起来后按「源文件内容 + 工具链 + 编译模板」的哈希复用，改回原内容也能命中。
+ */
+export function isBuildReuseEnabled(): boolean {
+  return getConfig().get<boolean>('test.reuseBuild', false) === true;
+}
+
+/** 看门狗默认阈值（可被 toolchains.json 里单个工具链的字段覆盖） */
+export function getTestLimits(): { timeoutMs: number; maxOutputBytes: number; maxMemoryBytes: number } {
+  const cfg = getConfig();
+  const num = (key: string, dflt: number): number => {
+    const v = cfg.get<number>(key, dflt);
+    return typeof v === 'number' && isFinite(v) && v > 0 ? v : dflt;
+  };
+  return {
+    timeoutMs: num('test.timeoutMs', 10000),
+    maxOutputBytes: num('test.maxOutputBytes', 64 * 1024 * 1024),
+    maxMemoryBytes: num('test.maxMemoryBytes', 2 * 1024 * 1024 * 1024),
+  };
+}
+
 /** 侧边栏「初始化项目」条目是否允许出现（D2；`false` 则彻底关闭） */
 export function isInitEntryVisible(): boolean {
   return getConfig().get<boolean>('project.initEntryVisible', true);

@@ -160,6 +160,44 @@
           "type": "boolean",
           "default": true,
           "description": "重新登录成功后，自动恢复原来的比赛与题目并回到提交页"
+        },
+        "oj.test.toolchain": {
+          "type": "string",
+          "default": "auto",
+          "markdownDescription": "本地测试使用的工具链 id。`auto` 按源文件扩展名自动匹配；也可填 `toolchains.json` 里自定义的 id。"
+        },
+        "oj.test.toolchainsFile": {
+          "type": "string",
+          "default": ".vsoj/toolchains.json",
+          "markdownDescription": "工具链定义文件的位置（相对工作区根或绝对路径）。内置工具链写在代码里，此文件只放你的覆盖与新增。"
+        },
+        "oj.test.searchDirs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "额外的命令搜索目录（如便携环境 `D://tools//mingw64//bin`）。不填也能用：在 `toolchains.json` 里把命令写成绝对路径即可。"
+        },
+        "oj.test.reuseBuild": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "复用上次编译产物：源文件内容没变就跳过编译。默认关闭（每次都重编），避免调试到旧产物。"
+        },
+        "oj.test.timeoutMs": {
+          "type": "number",
+          "default": 10000,
+          "markdownDescription": "单个用例的运行超时（毫秒）。超时会上报为运行事实，不参与判定。"
+        },
+        "oj.test.maxOutputBytes": {
+          "type": "number",
+          "default": 67108864,
+          "markdownDescription": "单个用例的输出上限（字节）。超出会终止运行，防止死循环把磁盘写满。"
+        },
+        "oj.test.maxMemoryBytes": {
+          "type": "number",
+          "default": 2147483648,
+          "markdownDescription": "单个用例的驻留内存上限（字节，宽松看门狗，1 秒轮询一次）。"
         }
       }
     },
@@ -328,6 +366,21 @@
         "command": "oj.project.dismissInitEntry",
         "title": "暂不初始化",
         "icon": "$(close)"
+      },
+      {
+        "command": "oj.test.compile",
+        "title": "OJ: 编译当前题目",
+        "icon": "$(tools)"
+      },
+      {
+        "command": "oj.test.compileForce",
+        "title": "OJ: 强制重新编译",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "oj.test.run",
+        "title": "OJ: 本地测试",
+        "icon": "$(beaker)"
       }
     ],
     "keybindings": [
@@ -412,6 +465,16 @@
         {
           "command": "oj.showProblem",
           "when": "view == oj.problems && viewItem == problem"
+        },
+        {
+          "command": "oj.test.run",
+          "when": "view == oj.problems && viewItem == problem",
+          "group": "2_test@1"
+        },
+        {
+          "command": "oj.test.compile",
+          "when": "view == oj.problems && viewItem == problem",
+          "group": "2_test@2"
         }
       ],
       "editor/context": [
@@ -467,7 +530,8 @@
     "test:theme": "npm run compile && node test/theme.test.js",
     "test:toolchain": "npm run compile && node test/toolchain.test.js",
     "test:compare": "npm run compile && node test/compare.test.js",
-    "test:runner": "npm run compile && node test/runner.test.js"
+    "test:runner": "npm run compile && node test/runner.test.js",
+    "test:wiring": "npm run compile && node test/test-wiring.test.js"
   },
   "devDependencies": {
     "@types/cheerio": "^0.22.35",

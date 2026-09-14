@@ -142,6 +142,25 @@ export interface BuildResult {
   output: string;
 }
 
+/**
+ * 「跑一下」的准备结果（`LocalTestRunner.prepareOnly`）。
+ *
+ * 引擎只负责「把它编译好、把运行命令拼好」，怎么接进终端是 Task 层的事 ——
+ * 这样引擎不必知道终端，Task 层也不必知道编译细节（契约 C1 的延伸）。
+ */
+export interface PreparedRun {
+  ok: boolean;
+  build: BuildResult;
+  /** 运行命令 argv（`ok` 为 false 时为空数组） */
+  argv: string[];
+  /** 运行时 cwd（= 题目目录，与编译时一致） */
+  cwd: string;
+  /** 运行时环境（已注入工具链 bin 目录，见 `buildEnv`） */
+  env: NodeJS.ProcessEnv;
+  /** 失败原因：编译器原文，或工具链不可用的可操作指引 */
+  message: string;
+}
+
 export interface Summary { total: number; passed: number; failed: number; skipped: number }
 
 export type RunFailureReason = 'toolchain-missing' | 'build-failed' | 'no-cases' | 'cancelled';
@@ -274,12 +293,8 @@ export class LocalTestRunner {
     const t0 = this.now;
     const { toolchain, meta } = this.deps;
 
-    let sourceText = '';
-    try {
-      sourceText = fs.readFileSync(this.deps.sourceFile, 'utf8');
-    } catch { /* 源文件不存在时后面 build 会报错，这里不吞 */ }
+    const sourceText = this.readSourceText();
     const sourceHash = sha1(sourceText);
-
     const base: TestRunResult = {
       version: 1,
       cid: meta.cid,
@@ -343,6 +358,41 @@ export class LocalTestRunner {
     base.summary.failed = base.cases.filter(c => c.verdict === 'fail').length;
     base.ok = base.reason === undefined && base.cases.length > 0;
     return finish(base);
+  }
+
+  /**
+   * 只做 prepare（编译），不跑用例。
+   *
+   * 给「跑一下」用：Task 层拿到 `argv` 后把它接到 VS Code 集成终端，stdin 用样例文件，
+   * 输出实时显示 —— 这就是本项目自研的调试入口（不判定、不断点，见 PLAN_S6 §5.10）。
+   *
+   * 与 `run()` 共用同一个 `prepare`，所以「跑一下」用的产物和测试用的**必定是同一个**，
+   * 不会出现「测试过了但跑一下是旧产物」这种错位。
+   */
+  async prepareOnly(): Promise<PreparedRun> {
+    if ((this.deps.missing ?? []).length) {
+      return {
+        ok: false,
+        message: this.missingMessage(),
+        build: { ok: false, reused: false, durationMs: 0, command: '', runnable: '', output: '' },
+        argv: [], cwd: this.deps.sourceDir, env: {},
+      };
+    }
+
+    const build = await this.prepare(this.readSourceText());
+    const def = this.deps.toolchain;
+    return {
+      ok: build.ok,
+      build,
+      message: build.ok ? '' : build.output,
+      argv: build.ok ? expandTemplate(def.run, this.templateVars({ runnable: build.runnable })) : [],
+      cwd: this.deps.sourceDir,
+      env: buildEnv(def, this.deps.resolved, this.deps.baseEnv ?? process.env),
+    };
+  }
+
+  private readSourceText(): string {
+    try { return fs.readFileSync(this.deps.sourceFile, 'utf8'); } catch { return ''; }
   }
 
   /** 工具链不给可用命令时，把原因与探测位置说清楚 */
