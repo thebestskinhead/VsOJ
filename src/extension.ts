@@ -12,6 +12,7 @@ import {
   getKeepAliveIntervalMs, getSessionProbeIntervalMs, getAutoRelogin,
   getAutoReplaySubmit, isOfflineMode, isCacheEnabled, getCacheTtlMs, getStaleTtlMs,
   isProjectEnabled, isLazyInitEnabled, getSourceFileName, getTestResultPageMode,
+  getStatusPollInterval,
 } from './utils/config';
 import { ContestTreeProvider } from './views/contestTree';
 import { ProblemTreeProvider } from './views/problemTree';
@@ -20,6 +21,7 @@ import { LoginWebview } from './webview/loginWebview';
 import { AccountWebview } from './webview/accountWebview';
 import { SubmitWebview } from './webview/submitWebview';
 import { ProblemWebview } from './webview/problemWebview';
+import { StatusWebview } from './webview/statusWebview';
 import { TestResultWebview, resultPagePlan } from './webview/testResultWebview';
 import { LANGUAGE_EXT, ProblemBrief } from './types';
 import { initDebugChannel, showDebugChannel, clearDebugChannel, setDebugEnabled, isDebugEnabled, logInfo } from './utils/debug';
@@ -353,6 +355,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const statusPanel = new StatusPanel(submitService, state);
 
   /**
+   * 提交结果页（webview 模式）。样式与题目页 / 测试结果页统一，待判定的提交
+   * 就地轮询 `status-ajax.php` 刷新（对齐站点 `auto_refresh.js`），不整页重载。
+   */
+  const statusWebview = new StatusWebview({
+    loadRecords: () => submitService.queryStatus(state.getStudentId() || '', state.getCurrentCid() || ''),
+    pollRow: (submitId) => submitService.fetchStatusAjax(submitId),
+    loadDetail: (submitId, resultCode) => submitService.fetchJudgementDetail(submitId, resultCode),
+    pollIntervalMs: () => getStatusPollInterval(),
+    currentCid: () => state.getCurrentCid() || '',
+    currentUser: () => state.getStudentId() || '',
+    currentPid: () => state.getCurrentPid() || '',
+    log: (m) => logInfo(m),
+  });
+
+  /**
    * 结果页（S6.6）。判过期要读当前源文件 —— 优先内存中的文档，
    * 这样「改了但没保存」也会被标成「结果可能已过期」。
    */
@@ -423,7 +440,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         if (mode === 'browser') {
           openStatusInBrowser(state);
         } else if (mode === 'webview') {
-          statusPanel.startSubmitWebviewRefresh();
+          void statusWebview.show({ focus: true });
         } else {
           statusPanel.startSubmitAutoRefresh(pidLetter);
         }
@@ -727,7 +744,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await state.setCurrentCid(undefined);
       await state.setCurrentPid(undefined);
       problemTreeProvider.refresh();
-      statusPanel.dispose();
+      // 只停刷新、不释放 OutputChannel —— 释放后这个面板本次会话就再也写不进去了
+      statusPanel.pause();
       vscode.window.showInformationMessage('[OJ] 已退出比赛');
     })
   );
@@ -937,7 +955,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         if (mode === 'browser') {
           await openStatusInBrowser(state);
         } else if (mode === 'webview') {
-          await statusPanel.showWebview();
+          await statusWebview.show({ focus: false });
         } else {
           await statusPanel.show();
         }
@@ -1618,6 +1636,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     { dispose: () => problemWebview.dispose() },
     { dispose: () => resultWebview.dispose() },
     { dispose: () => statusPanel.dispose() },
+    { dispose: () => statusWebview.dispose() },
     { dispose: () => { disposeMcpChannel(); } },
   );
 

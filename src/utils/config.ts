@@ -27,6 +27,18 @@ export function getStatusViewMode(): 'output' | 'webview' | 'browser' {
   return getConfig().get<'output' | 'webview' | 'browser'>('statusViewMode', 'browser');
 }
 
+/**
+ * 结果页里待判定提交的轮询起始间隔（毫秒）。
+ *
+ * 站点自己的状态页用 80ms 起步、逐次翻倍；那是页面直连同机 OJ 的量级。
+ * 我们每次轮询都要过一层扩展的 HTTP 客户端（可能还套着 WebVPN），
+ * 所以起点调宽、并且**始终逐次翻倍封顶**。
+ */
+export function getStatusPollInterval(): number {
+  const raw = getConfig().get<number>('statusPollInterval', 800);
+  return Number.isFinite(raw) && raw >= 100 ? Math.floor(raw) : 800;
+}
+
 export function getMcpEnabled(): boolean {
   return getConfig().get<boolean>('mcp.enabled', false);
 }

@@ -9,6 +9,7 @@ import { formatAge } from '../cache/freshness';
 import { ConnectivityProbe } from '../session/connectivity';
 import { localizeImages } from '../media/localize';
 import { getStaleTtlMs, getBaseUrl } from '../utils/config';
+import { escapeHtml } from '../utils/format';
 
 /**
  * 题目详情 Webview —— **缓存优先 + 离线预览**。
@@ -350,16 +351,9 @@ export class ProblemWebview {
 </style></head>
 <body><div style="text-align:center;">
   <h3>加载失败</h3>
-  <p>${this.escapeHtml(message)}</p>
+  <p>${escapeHtml(message)}</p>
   <p class="hint">网络恢复后重新打开本题即可自动重建缓存</p>
 </div></body></html>`;
-  }
-
-  private escapeHtml(text: string): string {
-    return text
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
   }
 
   dispose(): void {

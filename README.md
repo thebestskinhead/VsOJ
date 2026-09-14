@@ -59,7 +59,7 @@ OJ 在线判题平台 VS Code 插件，让你在 VS Code 内完成全部 OJ 操�
 | `oj.exitContest` | — | 退出当前比赛 |
 | `oj.showProblem` | — | 查看题目详情 |
 | `oj.submit` | `Ctrl+Shift+S` | 提交当前编辑器代码 |
-| `oj.refreshStatus` | — | 刷新提交状态（OutputChannel 底部输出） |
+| `oj.refreshStatus` | — | 查看提交结果（按 `oj.statusViewMode` 决定形态：结果页 / OutputChannel / 外部浏览器） |
 | `oj.toggleStatusAutoRefresh` | — | 开启/停止状态自动刷新（5秒间隔） |
 | `oj.toggleFavorite` | — | 收藏/取消收藏比赛（右键菜单） |
 | `oj.favoriteContest` | — | 收藏比赛（手动输入 CID） |
@@ -166,7 +166,8 @@ HTTP 服务器真实复现 OJ 的各类响应（500 空体 / 302 重定向 / 验
 4. **查看题目**：进入比赛后，"题目列表"显示所有题目，点击题目打开详情
 5. **编写代码**：在 VS Code 中正常编辑代码文件
 6. **提交代码**：选中题目后，在编辑器中按 `Ctrl+Shift+S`，输入验证码提交
-7. **查看结果**：提交后在底部"OJ 提交状态"面板查看判题结果
+7. **查看结果**：提交后会自动打开「提交结果」页（把 `oj.statusViewMode` 设为 `webview`）——
+   待判定的提交会在页面里**就地轮询刷新**，不用手动重开；点「结果」那一格还能看判题详情
 
 ## MCP 服务器
 
@@ -347,7 +348,9 @@ VsOJ/
 │   │   ├── loginWebview.ts
 │   │   ├── accountWebview.ts
 │   │   ├── submitWebview.ts
-│   │   └── problemWebview.ts
+│   │   ├── problemWebview.ts
+│   │   ├── testResultWebview.ts   # 本地测试结果页
+│   │   └── statusWebview.ts       # 提交结果页
 │   ├── mcp/                  # 对外层：MCP 服务器与工具
 │   ├── utils/                # 基础层
 │   │   ├── parser.ts         # 唯一 HTML 解析出口
@@ -375,8 +378,8 @@ VsOJ/
 | S4 | ✅ | 运行期缓存刷新 + 离线预览 + 刷新/清理命令 |
 | S3 | ⏳ | 静态资源层（登录/提交页外置为 `media/`） |
 | S5 | ✅ | 比赛项目初始化（懒初始化 / 全量预取、左代码右题目、无工作区守卫） |
-| S6 | 🔶 | 本地测试引擎（S6.0–S6.6 已闭环：工具链 / 比较器 / 引擎 / 任务 / 结果页）；剩 MCP 测试工具与工具链编辑页 |
-| S7 | ⏳ | 状态页静态化 |
+| S6 | 🔶 | 本地测试引擎（S6.0–S6.6.1 已闭环：工具链 / 比较器 / 引擎 / 任务 / 本地测试结果页 / 提交结果页）；剩 MCP 测试工具与工具链编辑页 |
+| S7 | ✅ | 状态页静态化（由 S6.6.1 提前完成：自绘结果页取代代理渲染站点 `status.php`） |
 
 S4 已闭环的能力：缓存只存原始信息（题面 HTML / 图片二进制 / 样例）、侧边栏列表缓存优先、
 题目页缓存优先渲染 + 后台异步刷新（超 15 分钟且网络可达才刷新）、图片本地化（离线可看图）、

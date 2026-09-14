@@ -49,7 +49,7 @@
 
 ## 2. 全部配置项
 
-共 28 项。**结构**（键名 / 类型 / 默认值）由 `package.json` 生成，**语义**（取值 / 示例 / 坑）来自 `src/config/manual.ts`，两者由一致性测试保证不脱节。
+共 29 项。**结构**（键名 / 类型 / 默认值）由 `package.json` 生成，**语义**（取值 / 示例 / 坑）来自 `src/config/manual.ts`，两者由一致性测试保证不脱节。
 
 | 配置项 | 类型 | 默认值 | 用途 | 标记 |
 |---|---|---|---|---|
@@ -57,6 +57,7 @@
 | `oj.defaultLanguage` | string | `"cpp"` | 默认提交语言 | ⚠️ 未生效 |
 | `oj.autoRefreshStatus` | boolean | `true` | （声明为）提交后是否自动刷新判题状态 | ⚠️ 未生效 |
 | `oj.statusRefreshInterval` | number | `5000` | 判题状态自动刷新的间隔（毫秒） |  |
+| `oj.statusPollInterval` | number | `800` | 结果页轮询待判定提交的起始间隔（毫秒） |  |
 | `oj.statusViewMode` | string | `"browser"` | 判题状态在哪里显示 |  |
 | `oj.mcp.enabled` | boolean | `false` | 插件启动时是否自动启动 MCP 服务器 |  |
 | `oj.mcp.port` | number | `9527` | MCP 服务器监听端口 |  |
@@ -127,12 +128,22 @@
 - **设置面板原文**：状态面板自动刷新间隔（毫秒）
 - **读取处**：`getStatusRefreshInterval()`
 
+#### `oj.statusPollInterval`
+
+- **用途**：结果页轮询待判定提交的起始间隔（毫秒）
+- **类型**：`number`｜**默认值**：`800`
+- **取值**：≥ 100 的整数；小于 100 会被忽略并回落 800
+- **说明**：只影响 `oj.statusViewMode = webview`：页面上「等待 / 编译中 / 运行并评判」那几条会按这个间隔去查 `status-ajax.php`，**每次翻倍、封顶 8 秒**。站点自己的状态页用 80ms 起步，那是页面直连同机 OJ 的量级；插件每次都要过一层 HTTP 客户端（可能还套 WebVPN），起点因此宽得多。
+- **示例**：`800`
+- **设置面板原文**：结果页里「还没判完」那几条的轮询起始间隔（毫秒）。每次轮询后翻倍、封顶 8 秒 —— 与站点状态页自己的做法一致。
+- **读取处**：`getStatusPollInterval()`
+
 #### `oj.statusViewMode`
 
 - **用途**：判题状态在哪里显示
 - **类型**：`string`｜**默认值**：`"browser"`｜**可选值**：`output` / `webview` / `browser`
-- **取值**：`browser` 外部浏览器 / `webview` 内嵌页面 / `output` 文本表格
-- **说明**：`browser` 最完整（站点原样渲染，含样式与交互）；`webview` 在编辑器内不跳窗口；`output` 最轻，适合只想扫一眼结果。
+- **取值**：`browser` 外部浏览器 / `webview` 编辑器内结果页 / `output` 文本表格
+- **说明**：`browser` 打开站点原页面最完整，但会跳出编辑器；`webview` 是插件自绘的结果页，**待判定的提交会在页面里就地轮询刷新**（不整页重载），并且能点开每一条看判题详情；`output` 最轻，适合只想扫一眼结果。
 - ⚠️ **坑**：填了三个之外的值不会报错，会静默按 `browser` 走。
 - **设置面板原文**：提交状态查看模式
 - **读取处**：`getStatusViewMode()`

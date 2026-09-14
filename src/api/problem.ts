@@ -2,6 +2,7 @@ import { apiClient } from './client';
 import { parseProblemDetail } from '../utils/parser';
 import { ProblemDetail } from '../types';
 import { getBaseUrl } from '../utils/config';
+import { escapeHtml } from '../utils/format';
 
 /** 题目模块 — 题目详情获取与解析（渲染产物的构建也在此，历史原因） */
 
@@ -58,11 +59,11 @@ export class ProblemService {
 
     const sample = (title: string, text: string) => text ? `<div class="sample-block">
     <h4>${title}</h4>
-    <pre>${this.escapeHtml(text)}</pre>
+    <pre>${escapeHtml(text)}</pre>
   </div>` : '';
 
     return [
-      `<h2>${this.escapeHtml(detail.title)}</h2>`,
+      `<h2>${escapeHtml(detail.title)}</h2>`,
       panel('题目描述', detail.description),
       panel('输入', detail.inputDesc),
       panel('输出', detail.outputDesc),
@@ -83,7 +84,7 @@ export class ProblemService {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${this.escapeHtml(detail.title)}</title>
+  <title>${escapeHtml(detail.title)}</title>
   <style>
     /* 固定亮色主题：不跟随 VS Code 配色（深色主题下题目页仍保持白底深字） */
     html { color-scheme: light; }
@@ -151,7 +152,7 @@ export class ProblemService {
 </head>
 <body>
   <div class="oj-bar oj-bar-${kind}" id="ojBar">
-    <span id="ojBarText">${this.escapeHtml(banner)}</span>
+    <span id="ojBarText">${escapeHtml(banner)}</span>
     <span class="oj-bar-right">
       <span class="oj-spin" id="ojSpin" style="display:none"></span>
       ${opts.enableRefresh ? '<button id="ojRefreshBtn" title="强制刷新本题缓存（忽略 15 分钟阈值）">刷新</button>' : ''}
@@ -201,11 +202,5 @@ export class ProblemService {
 </html>`;
   }
 
-  private escapeHtml(text: string): string {
-    return (text ?? '')
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
-  }
+  // 转义实现只有一份：`utils/format`（题目页 / 结果页 / 提交状态页共用）
 }

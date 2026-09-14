@@ -2,8 +2,7 @@ import * as vscode from 'vscode';
 import { SubmitService } from '../api/submit';
 import { StateManager } from '../utils/state';
 import { StatusRecord } from '../types';
-import { getStatusRefreshInterval, getBaseUrl } from '../utils/config';
-import { apiClient } from '../api/client';
+import { getStatusRefreshInterval } from '../utils/config';
 
 /** 状态面板 — OutputChannel，纯文本框线表格，刷新时替换 */
 
@@ -182,135 +181,19 @@ export class StatusPanel {
 
   isAutoRefreshEnabled(): boolean { return this.autoRefreshEnabled; }
 
-  /** Webview 模式：打开 OJ 自带的 status 页面 */
-  private statusWebviewPanel: vscode.WebviewPanel | undefined;
-
-  async showWebview(): Promise<void> {
-    if (this.statusWebviewPanel) {
-      this.statusWebviewPanel.reveal(vscode.ViewColumn.Two);
-      return;
-    }
-
-    this.statusWebviewPanel = vscode.window.createWebviewPanel(
-      'ojStatus',
-      'OJ 提交状态',
-      vscode.ViewColumn.Two,
-      { enableScripts: true, retainContextWhenHidden: true },
-    );
-
-    this.statusWebviewPanel.onDidDispose(() => { this.statusWebviewPanel = undefined; });
-
-    // 代理拦截：webview 内链接/表单 → 扩展带 Cookie 请求 → 回传 HTML
-    this.statusWebviewPanel.webview.onDidReceiveMessage(async (msg: any) => {
-      if (msg.command === 'proxyNavigate' && this.statusWebviewPanel) {
-        try {
-          const baseUrl = getBaseUrl();
-          let targetUrl = msg.url;
-          // 补全相对路径
-          if (targetUrl.startsWith('/')) targetUrl = baseUrl + targetUrl;
-          else if (!targetUrl.startsWith('http')) targetUrl = `${baseUrl}/${targetUrl}`;
-
-          const resp = await apiClient.get<string>(targetUrl, { responseType: 'text' });
-          this.statusWebviewPanel.webview.html = this.injectProxyScript(resp.data, baseUrl);
-        } catch (e: any) {
-          this.statusWebviewPanel.webview.postMessage({ command: 'proxyError', message: e.message });
-        }
-      }
-    });
-
-    await this.loadStatusPage();
-  }
-
-  private async loadStatusPage(): Promise<void> {
-    const cid = this.state.getCurrentCid();
-    const userId = this.state.getStudentId() || '';
-    const pid = this.state.getCurrentPid();
-    const baseUrl = getBaseUrl();
-
-    const params = new URLSearchParams();
-    if (userId) params.set('user_id', userId);
-    if (cid) params.set('cid', cid);
-    if (pid) {
-      // PID 数字 → 字母（0→A, 1→B, ...）
-      const letter = String.fromCharCode(65 + parseInt(pid, 10));
-      params.set('problemId', letter);
-    }
-    const query = params.toString();
-    const url = query ? `${baseUrl}/status.php?${query}` : `${baseUrl}/status.php`;
-
-    try {
-      const response = await apiClient.get<string>(url, { responseType: 'text' });
-      const html = this.injectProxyScript(response.data, baseUrl);
-      if (this.statusWebviewPanel) {
-        this.statusWebviewPanel.webview.html = html;
-      }
-    } catch (e: any) {
-      if (this.statusWebviewPanel) {
-        this.statusWebviewPanel.webview.html = `<!DOCTYPE html>
-          <html lang="zh-CN"><head><meta charset="UTF-8">
-          <style>html{color-scheme:light}body{padding:20px;font-family:sans-serif;color:#c62828;background:#fff}</style>
-          </head><body>
-            <h3>加载状态页面失败</h3><p>${e.message}</p>
-            <p>请确认 OJ 平台地址配置正确，且已登录。</p>
-          </body></html>`;
-      }
-    }
-  }
-
-  /** 注入代理脚本：拦截所有链接和表单，通过扩展代理带 Cookie 请求 */
-  private injectProxyScript(html: string, baseUrl: string): string {
-    const proxyScript = `
-<script>
-(function(){
-  const base='${baseUrl}'.replace(/\\/+$/,'');
-  const vscode=acquireVsCodeApi();
-
-  // 拦截所有 <a> 链接
-  document.addEventListener('click',function(e){
-    var a=e.target.closest('a');
-    if(a&&a.href&&!a.href.startsWith('javascript')&&!a.target){
-      e.preventDefault();
-      var url=a.getAttribute('href')||a.href;
-      if(url.startsWith(base)){url=url.substring(base.length)}
-      else if(url.startsWith('/')){/* keep */}
-      vscode.postMessage({command:'proxyNavigate',url:url});
-    }
-  },true);
-
-  // 拦截所有 <form> 提交
-  document.addEventListener('submit',function(e){
-    var f=e.target.closest('form');
-    if(f&&f.action){
-      e.preventDefault();
-      var url=f.action;
-      var method=(f.method||'get').toLowerCase();
-      var fd=new FormData(f);
-      var params=new URLSearchParams();
-      for(var pair of fd.entries()){params.append(pair[0],pair[1])}
-      if(method==='get'){
-        if(params.toString()){url+=((url.indexOf('?')>=0)?'&':'?')+params.toString()}
-        vscode.postMessage({command:'proxyNavigate',url:url});
-      }else{
-        // POST 暂直接跳转 GET
-        if(params.toString()){url+=((url.indexOf('?')>=0)?'&':'?')+params.toString()}
-        vscode.postMessage({command:'proxyNavigate',url:url});
-      }
-    }
-  },true);
-})();
-</script>`;
-
-    return html.replace('</head>', `<base href="${baseUrl}/">\n${proxyScript}\n</head>`);
-  }
-
-  /** Webview 模式：提交通道仅打开 webview */
-  startSubmitWebviewRefresh(): void {
-    this.showWebview();
+  /**
+   * 停下自动刷新，但**保留 OutputChannel**。
+   *
+   * 退出比赛时用它而不是 `dispose()`：`dispose()` 会把 channel 一起释放掉，
+   * 之后再 `oj.refreshStatus` 往一个已释放的 channel 写就会抛错
+   * —— 输出面板一旦被释放，只有重载窗口才能恢复。
+   */
+  pause(): void {
+    this.stopAutoRefresh();
   }
 
   dispose(): void {
     this.stopAutoRefresh();
-    this.statusWebviewPanel?.dispose();
     this.channel.dispose();
   }
 }

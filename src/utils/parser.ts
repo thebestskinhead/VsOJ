@@ -264,6 +264,57 @@ export function parseStatusTable(html: string): StatusRecord[] {
   return rows;
 }
 
+/**
+ * `status-ajax.php?solution_id=` 的一行判题结果。
+ *
+ * 站点自己的状态页（`template/bs3/auto_refresh.js`）就是靠它做「不刷新页面」的
+ * 实时更新：拿到新结果后只改表里那几格，不动整页。
+ */
+export interface StatusAjaxRow {
+  resultCode: number;
+  memory: number;
+  time: number;
+  /** 判题机名字（站点表格最后一列） */
+  judger: string;
+  /** 结果标签后跟的那个数字：站点用来显示通过率 / 得分（AC 是 `100`） */
+  extra: string;
+}
+
+/**
+ * 解析 `status-ajax.php?solution_id=` 的响应。
+ *
+ * 响应形状（实测）：`<result>,<memory>,<time>,<judger>[,<extra>]`
+ *
+ * **不是这个形状一律返回 `null`** —— 会话失效时这个地址会吐回登录页 HTML，
+ * 那种情况绝不能当成「0 分」吞掉。
+ */
+export function parseStatusAjaxRow(text: string): StatusAjaxRow | null {
+  const raw = (text || '').trim();
+  const m = raw.match(/^(\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*([^,]*?)\s*(?:,\s*(.*))?$/);
+  if (!m) { return null; }
+  return {
+    resultCode: parseInt(m[1], 10),
+    memory: Math.max(0, parseInt(m[2], 10) || 0),
+    time: Math.max(0, parseInt(m[3], 10) || 0),
+    judger: (m[4] || '').trim(),
+    extra: (m[5] || '').trim(),
+  };
+}
+
+/**
+ * 从判题详情页里取出正文文本。
+ *
+ * `reinfo.php`（WA / TLE / … 的「期望 vs 你的输出」对照、AC 的逐测试点时间内存表）
+ * 与 `ceinfo.php`（编译器原文）**都把正文放在 `<pre id='errtxt'>` 里**，
+ * 所以一个解析函数够用。取不到返回 `null`（会话失效 / 该提交没有详情）。
+ */
+export function parseJudgementPre(html: string): string | null {
+  const $ = loadHtml(html);
+  const pre = $('pre#errtxt');
+  if (!pre.length) { return null; }
+  return pre.text();
+}
+
 /** 解析 CSRF Token */
 export function parseCsrfToken(html: string): string {
   const $ = loadHtml(html);

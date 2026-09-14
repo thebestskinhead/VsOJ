@@ -1,5 +1,5 @@
 import { apiClient } from './client';
-import { parseStatusTable } from '../utils/parser';
+import { parseStatusTable, parseStatusAjaxRow, parseJudgementPre, StatusAjaxRow } from '../utils/parser';
 import { StatusRecord, LANGUAGE_EXT, LANGUAGE_NAME } from '../types';
 import { AuthService } from './auth';
 import { CacheStore } from '../cache/store';
@@ -33,6 +33,9 @@ export interface StatusQueryResult {
   /** 离线模式且本地无缓存 */
   offlineNoCache?: boolean;
 }
+
+/** 单条提交的判题行 —— 类型定义在解析层，这里再导出方便上层引用 */
+export type { StatusAjaxRow };
 
 export class SubmitService {
   private auth: AuthService;
@@ -167,6 +170,53 @@ export class SubmitService {
       console.error('[OJ] 状态查询失败:', e);
       throw new Error(`查询状态失败: ${e.message}`);
     }
+  }
+
+  /**
+   * 查单条提交的最新判题结果（`status-ajax.php`）。
+   *
+   * 这是站点状态页**自动刷新**用的接口（见 `template/bs3/auto_refresh.js`），
+   * 一次只查一条、只回四个字段 —— 比重新拉一整张状态表轻得多，
+   * 也正因如此才能做到「更新状态而不刷新页面」。
+   *
+   * 响应形状不符合预期时抛错，**不返回「假结果」**：会话失效时这个地址会吐登录页，
+   * 要是兜底成 0（等待）就会一直空转轮询下去。
+   */
+  async fetchStatusAjax(solutionId: number): Promise<StatusAjaxRow> {
+    const response = await apiClient.get<string>('/status-ajax.php', {
+      params: { solution_id: solutionId },
+      headers: { 'Cache-Control': 'no-cache' },
+    }, 'submit.fetchStatusAjax');
+    const text = typeof response.data === 'string' ? response.data : '';
+    const row = parseStatusAjaxRow(text);
+    if (!row) {
+      throw new Error(`status-ajax 返回了非判题内容（可能已退出登录）：${text.slice(0, 80)}`);
+    }
+    return row;
+  }
+
+  /**
+   * 取判题详情正文。
+   *
+   * 页面选择与站点状态页「结果」列上的链接一致：编译错误走 `ceinfo.php`，
+   * 其余（WA / TLE / OLE / RE / AC）走 `reinfo.php`。两个页面的正文都在
+   * `<pre id='errtxt'>` 里，由 `parseJudgementPre` 统一取出。
+   */
+  async fetchJudgementDetail(
+    solutionId: number,
+    resultCode: number,
+  ): Promise<{ page: string; text: string }> {
+    const page = resultCode === 11 ? 'ceinfo.php' : 'reinfo.php';
+    const response = await apiClient.get<string>(`/${page}`, {
+      params: { sid: solutionId },
+      headers: { 'Cache-Control': 'no-cache' },
+    }, 'submit.fetchJudgementDetail');
+    const html = typeof response.data === 'string' ? response.data : '';
+    const text = parseJudgementPre(html);
+    if (text === null) {
+      throw new Error(`${page} 里没有可读内容（会话可能已失效，或该提交没有详情）`);
+    }
+    return { page, text };
   }
 
   /** 从当前激活编辑器推断语言编号 */

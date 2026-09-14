@@ -18,3 +18,18 @@ export function formatBytes(bytes: number): string {
   while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
   return `${v.toFixed(1)} ${units[i]}`;
 }
+
+/**
+ * 把任意文本转成可以安全插进 HTML 的片段（`&` `<` `>` `"` 四个字符）。
+ *
+ * **只此一份**：题目页、提交结果页、本地测试结果页都要把「站点来的 / 用户产的」
+ * 文本插进自绘页面，各写一份迟早会在「谁多转义了一个引号」上分叉 ——
+ * 而这类分叉在浅色主题下肉眼看不出来，只会变成 XSS。
+ */
+export function escapeHtml(text: string | null | undefined): string {
+  return (text ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}

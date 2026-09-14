@@ -98,11 +98,23 @@ export const CONFIG_SEMANTICS: Record<string, ConfigSemantic> = {
   statusViewMode: {
     group: '平台接入',
     summary: '判题状态在哪里显示',
-    values: '`browser` 外部浏览器 / `webview` 内嵌页面 / `output` 文本表格',
-    detail: '`browser` 最完整（站点原样渲染，含样式与交互）；`webview` 在编辑器内不跳窗口；'
+    values: '`browser` 外部浏览器 / `webview` 编辑器内结果页 / `output` 文本表格',
+    detail: '`browser` 打开站点原页面最完整，但会跳出编辑器；`webview` 是插件自绘的结果页，'
+      + '**待判定的提交会在页面里就地轮询刷新**（不整页重载），并且能点开每一条看判题详情；'
       + '`output` 最轻，适合只想扫一眼结果。',
     pitfall: '填了三个之外的值不会报错，会静默按 `browser` 走。',
     getter: 'getStatusViewMode',
+  },
+  statusPollInterval: {
+    group: '平台接入',
+    summary: '结果页轮询待判定提交的起始间隔（毫秒）',
+    detail: '只影响 `oj.statusViewMode = webview`：页面上「等待 / 编译中 / 运行并评判」'
+      + '那几条会按这个间隔去查 `status-ajax.php`，**每次翻倍、封顶 8 秒**。'
+      + '站点自己的状态页用 80ms 起步，那是页面直连同机 OJ 的量级；'
+      + '插件每次都要过一层 HTTP 客户端（可能还套 WebVPN），起点因此宽得多。',
+    values: '≥ 100 的整数；小于 100 会被忽略并回落 800',
+    example: '800',
+    getter: 'getStatusPollInterval',
   },
 
   // ── 会话与登录 ──────────────────────────────────────────────

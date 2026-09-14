@@ -64,7 +64,9 @@ const pages = sources
   .map(s => ({ rel: s.rel, docs: count(s.text, '<!DOCTYPE html>'), cs: count(s.text, 'color-scheme'), white: s.text.includes('#fff') }))
   .filter(p => p.docs > 0);
 
+// 题目页 / 登录页 / 账号页 / 提交页 / 本地测试结果页 / 提交结果页 / 题目页失败兜底 …
 check('含内联页面的文件数', pages.length, 7);
+check('内联页面总数', pages.reduce((a, p) => a + p.docs, 0), 9);
 check('每个页面都有 color-scheme', pages.filter(p => p.cs !== p.docs).map(p => `${p.rel}(${p.docs}/${p.cs})`), []);
 check('每个页面都指定了白底', pages.filter(p => !p.white).map(p => p.rel), []);
 

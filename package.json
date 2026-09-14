@@ -71,6 +71,11 @@
           "default": 5000,
           "description": "状态面板自动刷新间隔（毫秒）"
         },
+        "oj.statusPollInterval": {
+          "type": "number",
+          "default": 800,
+          "markdownDescription": "结果页里「还没判完」那几条的轮询起始间隔（毫秒）。每次轮询后翻倍、封顶 8 秒 —— 与站点状态页自己的做法一致。"
+        },
         "oj.statusViewMode": {
           "type": "string",
           "default": "browser",
@@ -81,7 +86,7 @@
           ],
           "enumDescriptions": [
             "Output 面板（文本框线表格）",
-            "Webview（OJ 自带状态页面）",
+            "Webview（编辑器内的结果页，待判定的提交就地轮询刷新）",
             "外部浏览器打开"
           ],
           "description": "提交状态查看模式"

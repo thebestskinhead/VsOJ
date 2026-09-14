@@ -20,6 +20,7 @@
 | S6.5 | 2026-09-14 | **配置说明书 + AI 初始化工具**（MCP：`get_config_manual` / `init_config`），`docs/CONFIG.md` 随插件发布 | `npm test` 21 套件；`test:config-manual` 44、`test:config-writer` 85、`test:config-tools` 54 |
 | S6.5.1 | 2026-09-14 | **修**：题目列表标题栏按钮重启后全消失（`oj.inContest` 派生 + 启动恢复） | `npm test` 22 套件；`test:context-sync` 13 项 |
 | S6.6 | 2026-09-14 | **结果页 webview**：两级明细（列表 → 期望/实际/差异）、过期标记、零脚本、全通过不抢焦点 | `npm test` 23 套件；`test:result-page` 61 项 |
+| S6.6.1 | 2026-09-14 | **提交结果页重写**：统一亮色样式 + 待判定行**就地轮询**（对齐站点 `auto_refresh.js`）、可点开判题详情；旧「原样嵌站点页面」下线 | `npm test` 24 套件；`test:status-webview` 136 项 |
 
 ---
 
@@ -352,6 +353,70 @@ context key 回到未定义 → 三个按钮的 `when` 全部不成立 → 标�
 
 ---
 
+## S6.6.1 — 提交结果页重写（2026-09-14）
+
+**用户的两条要求**：①样式与其他页面一致且保持亮色主题；②自动刷新提交状态
+（**不是页面刷新**，具体参考实际页面）。
+
+**改之前**：`oj.statusViewMode = webview` 这一档是 `statusPanel.showWebview()` —— 把站点
+`status.php` 的 HTML 原样塞进 webview，再注入脚本把链接/表单劫持成带 Cookie 的代理请求。
+页面长着站点的 Bootstrap 绿皮和整条导航栏，跟插件别的页面完全不像；站点页面本身也**没有**
+任何自动刷新，判没判完只能手动重开。
+
+**「参考实际页面」参考到的**：站点把自动刷新写在 `template/bs3/auto_refresh.js` 里，做法是
+「自下而上取第一条没出结果的行 → `GET status-ajax.php?solution_id=<sid>` →
+返回 `4,2228,55,Judger1,100` → **只改那一行的内存/耗时/判题机三格**；没出结果就挂转圈并
+`interval *= 2` 再问；出了结果改结果格再重扫」。**一次只问一条、逐次翻倍、只改 DOM 不重载** ——
+这套做法原样照搬（起始间隔改成可配的 `oj.statusPollInterval`，默认 800ms，因为插件每次都要过
+一层 HTTP 客户端、可能还套着 WebVPN）。
+
+**做了什么**
+
+- 新增 `src/webview/statusWebview.ts`：
+  - 纯函数：`buildStatusModel` / `buildStatusHtml` / `rowsHtml` / `numbersHtml` /
+    `detailHtml` / `pendingQueue` / `nextPendingRow` / `rowUpdatePayload` / `autoBadge`；
+  - 薄壳：`StatusWebview`（面板 + 消息通道 + 逐行轮询），首次整页渲染，
+    之后**只发消息**（`row` / `table` / `auto` / `detail` / `notice` / `busy`）。
+- `src/utils/parser.ts`：`parseStatusAjaxRow`（`status-ajax.php` 的
+  `结果码,内存,耗时,判题机[,额外数字]`；形状不符返回 `null`，**不兜底成「等待」**）、
+  `parseJudgementPre`（`reinfo.php` / `ceinfo.php` 的 `<pre id='errtxt'>` 正文，一个函数够用）。
+- `src/api/submit.ts`：`fetchStatusAjax` / `fetchJudgementDetail`（CE 走 `ceinfo.php`、
+  其余走 `reinfo.php`，与站点「结果」列的链接一致）。
+- `src/views/statusPanel.ts`：webview 档下线（删掉 `showWebview` / `loadStatusPage` /
+  `injectProxyScript`），只留 OutputChannel 档；新增 `pause()`。
+- 新配置 `oj.statusPollInterval`（默认 800）+ `config.ts#getStatusPollInterval` + 说明书条目。
+- `src/utils/format.ts`：`escapeHtml` 收敛为全项目唯一一份（原先三份，其中一份少转义 `"`）。
+- `extension.ts`：组合根里构造 `StatusWebview`；`oj.refreshStatus` 与提交成功后的 4s 跳转改走它。
+
+**页面长什么样**
+
+- 顶部：自动刷新徽章（`自动刷新中 · 提交 N` / `已全部出结果` / `没有待判定的提交`）、
+  「刷新列表」按钮、「显示全部题目 / 只看本题」切换。
+- 汇总：条数 + 正确 / 答案错误 / 编译错误 / 时间超限 / 运行错误 / 判题中。
+- 表格与站点同位次：提交编号 / 题目 / 结果 / 内存(KB) / 耗时(MS) / 语言 / 代码长度 / 提交时间。
+  待判定的行带 CSS 转圈（不用 emoji、不用蓝色）。
+- 「结果」列可点开判题详情，详情面板贴在那一行下面（不是甩到页面底部）。
+
+**顺带修掉的两处既有缺陷**
+1. 状态页的题目过滤**从来没生效过**：旧代码用 `problemId=<字母>` 请求 `status.php`，
+   而站点参数是 `problem_id` 且要**数字 pid**（实测 `problem_id=22` 得 3 条，
+   `problemId=W` / `problem_id=W` 都返回全部 20 条）。现在改为本地按题号字母过滤。
+2. `oj.exitContest` 调 `statusPanel.dispose()` 会把 OutputChannel 一起释放，之后再
+   `oj.refreshStatus` 写这个 channel 就抛错、只有重载窗口能恢复。改用 `pause()`。
+
+**验证**：`test/status-webview.test.js` 136 项断言 —— 结果码映射、`status-ajax` 真响应与
+「吐登录页 → null」、判题详情正文提取、模型汇总、轮询队列（自下而上 + 跳过已放弃）、
+行更新载荷、整页亮色与注入转义（含题名/语言/长度的投毒用例）、三种兜底页、
+**面板行为：首屏只赋值一次 `webview.html`、轮询全程不重赋值**、详情失败回报、关闭面板后
+在途轮询自停、重复 `show()` 不重开面板；末尾还有一条站点 markup 夹具的
+「解析 → 渲染」整链路。`npm test` → **24 套件全通过**。
+
+**顺带产出**：`outputs/提交结果页-预览.html`（真实渲染函数 + 从 `localhost:4657`（WebVPN 代理）
+拉到的**真提交数据**，20 条记录、本题 W 6 条）与 `outputs/提交结果页-预览-判题中.html`
+（把最新一条标成「运行并评判」，演示待判定 / 转圈 / 轮询态）。
+
+---
+
 ## 比赛目录初始化：现状与缺口（S5 开工前评审 · 已全部闭环）
 
 > 本节是 S5 开工前的评审记录，**保留作为决策依据**。
@@ -416,9 +481,10 @@ context key 回到未定义 → 三个按钮的 `when` 全部不成立 → 标�
   - ✅ 引擎与工具链：`prepare` / `run` / `compare` 三步 + 三闸看门狗（`src/test/`）
   - ✅ 接线层 + 自定义任务（`oj` 类型）：编译 / 本地测试 / 强制重编译 / **跑一下**
   - ✅ 配置说明书与 AI 初始化：MCP `get_config_manual` / `init_config` + `docs/CONFIG.md`
-  - ⏳ 待做：**S6.6 结果页 webview**（两级、亮色）、**S6.7 MCP 三工具**
-    （编译 / 本地测试 / 读最近结果 + 读题目图片）、**S6.8 工具链编辑页 +
-    macOS 内存探测回退 + 文档收口**
+  - ✅ 结果页 webview（S6.6，两级明细 / 过期标记 / 零脚本）与**提交结果页重写**（S6.6.1，
+    统一亮色 + 待判定行就地轮询 / 可点开判题详情）
+  - ⏳ 待做：**S6.7 MCP 三工具**（编译 / 本地测试 / 读最近结果 + 读题目图片）、
+    **S6.8 工具链编辑页 + macOS 内存探测回退 + 文档收口**
   - MCP 工具现状：共 **5 个**（`get_config_manual` / `init_config` /
     `get_contest_problems` / `get_current_problem` / `get_contest_list`）。
 - **注意：两个配置项当前不生效** —— `oj.defaultLanguage` 与 `oj.autoRefreshStatus`
@@ -426,7 +492,8 @@ context key 回到未定义 → 三个按钮的 `when` 全部不成立 → 标�
   要么接上，要么从声明里摘掉，别让它继续误导。
 - **S3 静态资源层** —— 把登录/提交页从 TS 字符串外置到 `media/`，用 `asWebviewUri` 加载。
   **经复核：尚未落地**（无 `media/` 目录，`asWebviewUri` 零引用）。
-- **S7 状态页静态化** —— 替换 `statusPanel` 中代理渲染 OJ 原生 `status.php` 的做法。
+- ✅ **S7 状态页静态化** —— 已由 S6.6.1 提前完成：`statusPanel` 里「原样嵌站点页面 +
+  链接代理脚本」的做法已下线，改为插件自绘的 `StatusWebview`（`src/webview/statusWebview.ts`）。
 
 ## 未验证项（需要账号才能确认）
 

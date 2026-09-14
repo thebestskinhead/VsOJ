@@ -5,7 +5,7 @@ import {
   TestRunResult, CaseResult, CaseVerdict, RunFailureReason, Summary,
   RunnerDeps, casePreviews, runtimeText, sha1, OutputPreview,
 } from '../test/runner';
-import { formatBytes } from '../utils/format';
+import { formatBytes, escapeHtml } from '../utils/format';
 import { getTestResultPageMode, TestResultPageMode } from '../utils/config';
 
 /**
@@ -180,13 +180,8 @@ export function buildResultModel(r: TestRunResult, ctx: BuildModelContext = {}):
 // 渲染（纯函数）
 // ─────────────────────────────────────────────────────────────
 
-export function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
+// 转义只有一份实现（`utils/format`）。此处再导出，保持既有调用点的写法不变。
+export { escapeHtml };
 
 /** 一级列表上的那枚状态徽章 */
 function verdictBadge(c: CaseView): string {

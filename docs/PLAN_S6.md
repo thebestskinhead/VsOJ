@@ -17,6 +17,8 @@
 4. **三个触发入口**：命令面板/右键菜单、VS Code Task、MCP 工具。
 5. **结果页**：内置 webview，两级结构（一级状态列表 / 二级单用例明细），固定亮色主题。
 6. **MCP 扩展**：`get_problem_assets`、`get_problem_samples`、`run_local_test`。
+7. **提交结果页重写**（S6.6.1，用户中途追加）：`oj.statusViewMode = webview` 这一档不再原样嵌入
+   站点页面，改成插件自绘的结果页 —— 样式统一、固定亮色、待判定的提交**就地轮询刷新**（不重载页面）。
 
 ### 0.2 本轮不做
 
@@ -361,6 +363,65 @@ Java/Python 不声明该位（它们往中文路径写产物本来就正常，�
 
 ---
 
+### 5.12 提交结果页重写（`oj.statusViewMode = webview`，用户追加需求）
+
+用户的诉求两条，都很具体：
+
+1. 「将样式与其他页面保持一致且保持亮色主题」
+2. 「自动刷新提交状态（**不是页面刷新**，具体参考实际页面）」
+
+**改之前是什么样**：`statusPanel.showWebview()` 把站点 `status.php` 的 HTML 原样塞进 webview，
+再注入一段脚本把链接 / 表单劫持成「带 Cookie 的代理请求」。结果是一个**长着 Bootstrap 绿皮、
+顶着整条站点导航栏**的页面，与插件其他页面完全不像；而且站点页面本身**没有任何自动刷新**，
+想知道判完了没有只能手动重开。
+
+**「参考实际页面」参考到的东西**：站点把自动刷新写在 `template/bs3/auto_refresh.js` 里 ——
+它不是轮询整页，而是：
+
+```
+auto_refresh(): 在表格里自下而上扫，取第一条没出结果的行 → setTimeout(fresh_result(sid), 80ms)
+fresh_result(): GET status-ajax.php?solution_id=<sid>
+                ← "4,2228,55,Judger1,100"   （结果码,内存,耗时,判题机,额外数字）
+                只改那一行的 内存/耗时/判题机 三格；若仍 <4 则挂个转圈图、interval *= 2 再问
+                出了结果 → 改「结果」格 → 再调一次 auto_refresh() 扫下一条
+```
+
+也就是说：**一次只问一条、逐次翻倍、只改 DOM 不重载**。这套做法照搬过来了。
+
+**落地**
+
+| 项 | 做法 |
+|---|---|
+| 界面 | 与题目页 / 本地测试结果页同一套亮色约定（白底深字、绿红琥珀灰、无 emoji、无蓝紫） |
+| 表头 | 与站点表格同位次：提交编号 / 题目 / 结果 / 内存(KB) / 耗时(MS) / 语言 / 代码长度 / 提交时间 |
+| 汇总 | 总条数 + 正确 / 答案错误 / 编译错误 / 时间超限 / 运行错误 / 判题中 |
+| 自动刷新 | 首屏渲染一次；此后只发消息改那几格。间隔 `oj.statusPollInterval`（默认 800ms）**起步、逐次翻倍、封顶 8 秒** |
+| 判定时限 | 单条最多等 `MAX_POLL_MS`（10 分钟），超了就不再死等并说清楚，用户可以点「刷新列表」重来 |
+| 筛选 | 默认「只看本题」，纯客户端藏行（不动请求），可一键切「显示全部题目」 |
+| 详情 | 「结果」列可点开判题详情：编译错误取 `ceinfo.php`、其余取 `reinfo.php`（与站点那一列的链接一致），两页正文都在 `<pre id='errtxt'>` 里，一个解析函数够用 |
+
+**为什么这一页是本项目唯一开脚本的页面**：整页重载式的「刷新」做不到「就地更新」，
+而就地更新必须有人在客户端改 DOM（契约 C26 那条「零脚本」约束的是**本地测试结果页**，
+它的内容是程序输出，不该有执行面；这一页的内容是**站点表格**，脚本只干改格子这一件事）。
+代价是所有注入内容一律经 `utils/format.escapeHtml`（契约 C29）。
+
+**顺带修掉的两处既有缺陷**
+
+1. **过滤器从来没生效过**：旧代码用 `problemId=<字母>` 去请求 `status.php`，
+   而站点的参数名是 `problem_id`、语义是**数字 pid**（实测：`problem_id=22` 得 3 条，
+   `problem_id=W` / `problemId=W` 都返回全部 20 条）。改成本地按题号字母过滤 ——
+   不额外拉一次网、不污染以 cid 为键的状态缓存，切「全部」也是瞬时的。
+2. **`oj.exitContest` 释放了 OutputChannel**：退出比赛时调 `statusPanel.dispose()`，
+   而那会连 `createOutputChannel` 出来的 channel 一起释放，之后再 `oj.refreshStatus`
+   往一个已释放的 channel 写就会抛错，只有重载窗口才能恢复。改成 `pause()`（只停定时器）。
+
+**转义实现收敛成一份**：`escapeHtml` 原本有三份（`api/problem.ts`、
+`webview/problemWebview.ts`、`webview/testResultWebview.ts`），其中 `problemWebview` 那份
+**少转义一个 `"`**。现在统一到 `utils/format.ts`，另外两处直接引用；
+`test/status-webview.test.js` 里加了断言钉住「题目页标题里的引号必须被转义」。
+
+---
+
 ## 6. 阶段切分（每阶段一次 commit + 独立可验证测试套件）
 
 | 阶段 | 内容 | 交付物 | 测试 |
@@ -373,6 +434,7 @@ Java/Python 不声明该位（它们往中文路径写产物本来就正常，�
 | S6.4 ✅ | 自定义任务（`oj` 类型）+ 终端桥：编译 / 本地测试 / 强制重编译 / **跑一下** | `src/test/tasks.ts`、`src/test/terminal.ts` | `test/tasks.test.js`（43，真实 g++ 端到端） |
 | S6.5 ✅ | **配置说明书 + AI 初始化工具**（用户追加）：`get_config_manual` / `init_config`，说明书生成与漂移断言 | `src/config/manual.ts`、`writer.ts`、`tools.ts`、`wiring.ts`、`scripts/gen-config-docs.js` | `test/config-manual.test.js`（44）、`test/config-writer.test.js`（85）、`test/config-tools.test.js`（54） |
 | S6.6 ✅ | 结果页 webview：两级明细、过期标记、零脚本、全通过不抢焦点 | `src/webview/testResultWebview.ts`（+ `runner.ts` 抽出 `casePreviews` / `runtimeText` 供报告与页面共用） | `test/test-result-page.test.js`（61） |
+| S6.6.1 ✅ | **提交结果页重写**（用户追加）：统一亮色样式 + 待判定行就地轮询（对齐站点 `auto_refresh.js`）、「结果」列可点开判题详情；旧实现（原样塞站点 HTML + 链接代理脚本）下线 | `src/webview/statusWebview.ts`、`src/api/submit.ts`、`src/utils/parser.ts`、`src/views/statusPanel.ts` | `test/status-webview.test.js`（136） |
 | S6.7 | MCP 三工具：编译 / 本地测试 / 读最近结果 + 读题目图片 | `src/mcp/tools.ts`、`server.ts` | `test/mcp-test-tools.test.js` |
 | S6.8 | 工具链可视化编辑页 + macOS 内存探测回退 + 文档收口 | `src/webview/toolchainWebview.ts` 等 | `test/toolchain-page.test.js` |
 
@@ -415,6 +477,16 @@ Java/Python 不声明该位（它们往中文路径写产物本来就正常，�
   输入/期望/实际用 `casePreviews()`，不得在视图层另写一份读取与截断逻辑。
 - **C26** 结果页的弹出与聚焦由 `oj.test.resultPage` 决定（`always` / `onFailure` / `never`）；
   **全通过时不抢焦点**（页面照常刷新），只有失败或没跑起来才把焦点夺过去。
+- **C27** 提交结果页（`oj.statusViewMode = webview`）**不得整页重载**：首屏渲染一次，
+  之后待判定行的更新只走消息、只改对应那几格；只有用户点「刷新列表」才允许替换表体。
+- **C28** 待判定 = 站点结果码 `< 4`；轮询走 `status-ajax.php?solution_id=`，
+  **一次只问一条**（自下而上取，与站点一致）、间隔逐次翻倍并封顶。
+  响应形状不符（会话失效会吐登录页 HTML）**必须报错**，不得兜底成「等待」——
+  那会让轮询永远空转下去。
+- **C29** 提交结果页是本项目唯一开了 `enableScripts` 的自绘页面，**所有拼进 DOM 的内容必须经
+  `escapeHtml`**（唯一实现在 `utils/format.ts`）；走 `setAttribute` 的（如行悬停提示）不做转义。
+- **C30** 提交结果页与题目页 / 本地测试结果页共用同一套亮色约定
+  （无 `--vscode-*`、白底深字、绿红琥珀灰、无 emoji、无蓝紫）。
 
 ---
 
@@ -440,12 +512,17 @@ S6 的优势是引擎本身不依赖 vscode，所以可以做**真端到端**：
 - `src/test/toolchain.ts`、`src/test/compare.ts`、`src/test/runner.ts`、`src/test/watchdog.ts`
 - `src/test/wiring.ts`（S6.3）、`src/test/taskTemplate.ts`（S6.6 未做，任务模板直接写在 `src/test/tasks.ts` 里）
 - `src/webview/testResultWebview.ts`（S6.6）、`src/webview/toolchainWebview.ts`（S6.8）
+- `src/webview/statusWebview.ts`（S6.6.1，替换 `statusPanel` 里原样嵌站点页面的 webview 档）
 - `src/utils/testConfig.ts`（**未拆**：`config.ts` 停在 190 行，先不为了「避免膨胀」而拆）
-- `test/{toolchain,compare,runner,test-wiring,test-result-page,mcp-test-tools,task-template,toolchain-page}.test.js`
+- `test/{toolchain,compare,runner,test-wiring,test-result-page,status-webview,mcp-test-tools,task-template,toolchain-page}.test.js`
 
 **修改**
 
 - `src/utils/config.ts`（或新增 testConfig.ts）｜`src/mcp/tools.ts`、`src/mcp/server.ts`
+- `src/utils/parser.ts`（S6.6.1：`status-ajax` 行与判题详情正文）
+- `src/api/submit.ts`（S6.6.1：`fetchStatusAjax` / `fetchJudgementDetail`）
+- `src/views/statusPanel.ts`（S6.6.1：webview 档下线，只留 OutputChannel 档）
+- `src/utils/format.ts`（S6.6.1：`escapeHtml` 收敛到这里，全项目唯一一份）
 - `src/extension.ts`（命令注册、右键菜单）｜`package.json`（配置项 / 命令 / 菜单 / tasks 模板）
 - `README.md`、`docs/PROGRESS.md`、`docs/ARCHITECTURE.md`
 
