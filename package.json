@@ -390,8 +390,20 @@
         "when": "oj.inContest"
       }
     ],
+    "submenus": [
+      {
+        "id": "oj.problemMenu",
+        "label": "题目快捷操作",
+        "icon": "$(tools)"
+      }
+    ],
     "menus": {
       "view/title": [
+        {
+          "submenu": "oj.problemMenu",
+          "when": "view == oj.problems",
+          "group": "navigation@0"
+        },
         {
           "command": "oj.login",
           "when": "view == oj.contests && !oj.loggedIn",
@@ -436,6 +448,24 @@
           "command": "oj.refreshProblems",
           "when": "view == oj.problems && oj.inContest",
           "group": "navigation"
+        }
+      ],
+      "oj.problemMenu": [
+        {
+          "command": "oj.submit",
+          "group": "1_submit@1"
+        },
+        {
+          "command": "oj.test.run",
+          "group": "2_test@1"
+        },
+        {
+          "command": "oj.test.compile",
+          "group": "2_test@2"
+        },
+        {
+          "command": "oj.test.compileForce",
+          "group": "2_test@3"
         }
       ],
       "view/item/context": [

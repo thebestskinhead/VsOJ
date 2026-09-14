@@ -485,6 +485,7 @@ AI 侧要的是**测试类**工具，而 MCP 只有五个只读与配置类工�
 | S6.6.1 ✅ | **提交结果页重写**（用户追加）：统一亮色样式 + 待判定行就地轮询（对齐站点 `auto_refresh.js`）、「结果」列可点开判题详情；自绘结果页取代原样嵌入站点 HTML + 链接代理脚本 | `src/webview/statusWebview.ts`、`src/api/submit.ts`、`src/utils/parser.ts`、`src/views/statusPanel.ts` | `test/status-webview.test.js`（136） |
 | S6.7 ✅ | **MCP 三工具**：`compile_problem` / `run_local_test` / `get_last_test_result`；`get_current_problem` 补 `local` 段（源文件/样例/题面图片/产物的本地路径） | `src/test/tools.ts`、`src/workspace/resources.ts`、`src/mcp/tools.ts`、`extension.ts` | `test/mcp-test-tools.test.js`（91，真实 `McpToolHandler` + 真 g++ 端到端） |
 | S6.8 ✅ | **工具链配置页**：内置 + 覆盖的实际生效情况一页看完（含命令探测到哪个路径、缺哪个），页面上增删改；保存只写改过的字段、内置项可一键恢复默认；**macOS 内存探测回退**（`ps -o rss=`） | `src/webview/toolchainWebview.ts`、`src/test/watchdog.ts`、`src/extension.ts`、`package.json` | `test/toolchain-page.test.js`（90）、`test/watchdog.test.js`（28） |
+| S6.9 ✅ | **题目快捷操作下拉**：侧边栏「题目列表」标题栏挂下拉（提交代码 / 本地测试 / 编译当前题目 / 强制重新编译）；未打开题目时三处提示统一为「请先打开一道题」 | `package.json`（`submenus` + `menus`）、`src/extension.ts` | `test/menu-contrib.test.js`（20） |
 
 ---
 
@@ -576,7 +577,7 @@ S6 的优势是引擎本身不依赖 vscode，所以可以做**真端到端**：
 - `src/webview/statusWebview.ts`（S6.6.1，替换 `statusPanel` 里原样嵌站点页面的 webview 档）
 - `src/test/tools.ts`（S6.7，MCP 三工具的服务层，零 vscode）、`src/workspace/resources.ts`（S6.7，题目本地路径清单）
 - `src/utils/testConfig.ts`（**未拆**：`config.ts` 停在 190 行，先不为了「避免膨胀」而拆）
-- `test/{toolchain,toolchain-page,compare,runner,test-wiring,test-result-page,status-webview,mcp-test-tools,watchdog}.test.js`
+- `test/{toolchain,toolchain-page,compare,runner,test-wiring,test-result-page,status-webview,mcp-test-tools,menu-contrib,watchdog}.test.js`
 
 **修改**
 

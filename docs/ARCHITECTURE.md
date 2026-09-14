@@ -156,7 +156,7 @@
 
 ### 测试与验证
 
-`npm test` 一次性跑完全部套件（**25 套件 / 1297 项断言**），全部脱离 VS Code 运行时
+`npm test` 一次性跑完全部套件（**28 套件 / 1435 项断言**），全部脱离 VS Code 运行时
 （`vscode` 模块桩 + 本地 HTTP 服务器）。**引擎套件不 mock 编译与执行** ——
 用本机真实的 g++ 编译真实源码、跑真实样例、比真实字节
 （找不到编译器时该组用例降级为 skip 并说明，不伪装成通过）。
@@ -166,6 +166,7 @@
 | `status-webview` | 143 | 提交结果页：结果码映射、轮询队列、注入转义、亮色、**首屏只赋值一次 `webview.html`** |
 | `cache-layout` | 91 | 布局 v2、字母目录命名、幂等、重命名、索引兜底、多比赛隔离、slug 边界、清理语义 |
 | `mcp-test-tools` | 91 | MCP 三工具（真 `McpToolHandler` + 真 g++）、`get_current_problem` 的 `local` 段、读结果不重跑 |
+| `toolchain-page` | 90 | 工具链配置页：模型组装、保存计划（部分覆盖 / 恢复默认 / 坏输入不落盘）、渲染转义、真落盘后引擎读回 |
 | `config-writer` | 85 | `planConfigWrite` 纯函数：键名容错、类型转换、错误拒绝落盘 |
 | `init` | 83 | `ensureProblem` 幂等 / 增量 / 离线 / 取消 / 失败汇总 / 骨架内容 / 目录命名 |
 | `session` | 71 | 失效分类、登录页判定、意图重放与过期、保活时序、对本地 HTTP 服务器端到端验证提交分类 |
@@ -182,7 +183,9 @@
 | `refresh` | 38 | 刷新执行器串行 / 取消 / 失败可见性 |
 | `revalidate` | 38 | 重访五态决策 |
 | `project-tree` | 35 | 头部条目、占位项、列表失败降级 |
+| `watchdog` | 28 | 内存探测三条平台路径（Windows / `/proc` / `ps` 回退）+ 时间闸与内存闸真起进程 |
 | `cache-freshness` | 23 | TTL 边界 |
+| `menu-contrib` | 20 | 菜单引用自洽：命令都已声明、下拉有定义且被挂、`when` 里的视图 id 存在、下拉项顺序 |
 | `config-consistency` | 16 | 声明的配置项 / 命令 / 菜单必须真的被消费（排除说明书本身） |
 | `connectivity` | 16 | 可达性探测与结果缓存 |
 | `context-sync` | 13 | `cid` ↔ 上下文派生、启动恢复、无 cid 不误报、静态防回归 |

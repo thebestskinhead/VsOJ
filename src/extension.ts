@@ -974,7 +974,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         const pid = state.getCurrentPid();
 
         if (!cid || !pid) {
-          vscode.window.showErrorMessage('请先进入比赛并选择题目');
+          vscode.window.showErrorMessage('[OJ] 请先打开一道题（在侧边栏的题目列表里点开，或打开这道题的题面）。');
           return;
         }
 
@@ -987,7 +987,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
         const editor = vscode.window.activeTextEditor;
         if (!editor) {
-          vscode.window.showErrorMessage('没有打开的编辑器');
+          vscode.window.showErrorMessage('[OJ] 请先打开这道题的源代码文件（如 main.cpp）再提交。');
           return;
         }
 
@@ -1106,7 +1106,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const pid = item?.problem?.pid || problemWebview.current.pid;
       const cid = item?.problem?.cid || problemWebview.current.cid || state.getCurrentCid() || '';
       if (!cid || !pid) {
-        vscode.window.showErrorMessage('[OJ] 请先进入比赛并选择题目');
+        vscode.window.showErrorMessage('[OJ] 请先打开一道题（在侧边栏的题目列表里点开，或打开这道题的题面）。');
         return;
       }
 
@@ -1336,7 +1336,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   ): Promise<void> {
     const target = resolveProblemTarget(item);
     if (!target) {
-      void vscode.window.showWarningMessage('[OJ] 请先在侧边栏的题目条目上右键运行，或先打开这道题的题面。');
+      void vscode.window.showWarningMessage('[OJ] 请先打开一道题（在侧边栏的题目列表里点开，或打开这道题的题面）。');
       return;
     }
     const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';

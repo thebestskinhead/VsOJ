@@ -63,6 +63,8 @@ console.log('\n[3] 菜单指向 -> 命令声明');
   const dangling = [];
   for (const [where, list] of Object.entries(menus)) {
     for (const m of list) {
+      // 挂下拉的那一项引用的是 submenu 而不是命令（下拉自己的项照常在这张表里查）
+      if (!m.command) { continue; }
       if (m.command.startsWith('oj.') && !commands.has(m.command)) {
         dangling.push(`${where}: ${m.command}`);
       }
