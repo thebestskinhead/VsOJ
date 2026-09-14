@@ -331,7 +331,6 @@ export function buildStatusHtml(m: StatusPageModel): string {
       ? '<div class="notice">网络不可用，下面展示的是本地缓存里的记录，可能已过期</div>'
       : '';
   const toggle = `<button id="toggleBtn" data-act="toggle"${m.filterPid ? '' : ' hidden'}>显示全部题目</button>`;
-  const intervalSec = (m.pollIntervalMs / 1000).toFixed(1);
 
   return `<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="UTF-8">
@@ -388,7 +387,6 @@ export function buildStatusHtml(m: StatusPageModel): string {
   pre { margin: 0; padding: 8px 10px; background: #f7f7f7; border: 1px solid #e6e6e6; border-radius: 3px;
         white-space: pre-wrap; word-break: break-all; max-height: 420px; overflow: auto; }
   pre.err { color: #c62828; }
-  footer { margin-top: 22px; color: #888; font-size: 12px; border-top: 1px solid #eee; padding-top: 10px; }
 </style></head>
 <body${m.filterPid ? ' class="only-current"' : ''}>
   <h1>提交结果</h1>
@@ -412,11 +410,6 @@ export function buildStatusHtml(m: StatusPageModel): string {
     </tr></thead>
     <tbody id="tb">${rowsHtml(m)}</tbody>
   </table>
-  <footer>
-    判题结果原样来自站点；「结果」列可点开判题详情（编译错误 → 编译器原文，其余 → 期望 / 你的输出对照）<br>
-    待判定的提交按 <code>${escapeHtml(String(m.pollIntervalMs))}</code> 毫秒起步、逐次翻倍去查
-    <code>status-ajax.php</code>，<b>只改对应那几行、不重载页面</b>（首次询问约 ${escapeHtml(intervalSec)} 秒后）
-  </footer>
 <script>
 (function () {
   var vscode = acquireVsCodeApi();

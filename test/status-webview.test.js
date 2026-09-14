@@ -248,7 +248,7 @@ ok('深字', /body\s*\{[^}]*color:\s*#333/.test(page));
 ok('默认「只看本题」（body 带 only-current）', /<body class="only-current">/.test(page));
 ok('过滤规则用 data-match 而非动态选择器', page.includes('body.only-current tr[data-match="0"]'));
 ok('首屏徽章说明在刷新', /id="auto" class="auto on"/.test(page));
-ok('页脚写明走 status-ajax', page.includes('status-ajax.php'));
+ok('页面不含页脚说明文字', !page.includes('<footer>'));
 ok('唯一开脚本的页面：注入脚本在用 acquireVsCodeApi', page.includes('acquireVsCodeApi()'));
 ok('表格列与站点一致（提交编号 / 题目 / 结果 …）', page.includes('<th>提交编号</th>') && page.includes('<th>提交时间</th>'));
 ok('AC 行可点开详情', page.includes('data-act="detail"'));

@@ -369,7 +369,6 @@ export function buildResultHtml(m: ResultPageModel): string {
   .diff-where { color: #c62828; font-weight: 600; }
   .diff-why { color: #555; }
   .hint { color: #777; font-size: 12px; }
-  footer { margin-top: 22px; color: #888; font-size: 12px; border-top: 1px solid #eee; padding-top: 10px; }
   ul { margin: 6px 0 0 18px; padding: 0; color: #555; }
 </style></head>
 <body>
@@ -394,12 +393,6 @@ export function buildResultHtml(m: ResultPageModel): string {
   ${reasonHtml(m)}
   ${casesSection}
   ${skippedSection}
-
-  <footer>
-    判定口径：严格逐字节比较（先做 <code>\\r\\n → \\n</code> 归一化，等价站点 Linux 判题环境）·
-    只判「通过 / 不通过」，退出码与看门狗只作运行事实记录<br>
-    产物：${m.resultFile ? `<code>${escapeHtml(m.resultFile)}</code>　` : ''}${m.reportFile ? `<code>${escapeHtml(m.reportFile)}</code>` : ''}
-  </footer>
 </body></html>`;
 }
 
