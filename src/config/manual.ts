@@ -272,6 +272,18 @@ export const CONFIG_SEMANTICS: Record<string, ConfigSemantic> = {
     example: '2147483648（2 GB）',
     getter: 'getTestLimits',
   },
+  'test.resultPage': {
+    group: '本地测试',
+    summary: '跑完测试后是否弹出结果页',
+    detail: '结果页是插件自绘的页面（两级：用例列表 → 期望 / 实际 / 差异明细），'
+      + '`always` 每次都弹、`onFailure` 只在有失败或没跑起来时弹、`never` 不弹。'
+      + '**全通过时页面不抢焦点**，只有失败或异常才把光标夺过去。',
+    values: '`always` / `onFailure` / `never`',
+    example: 'always',
+    pitfall: '设成 `never` 不影响判定与产物 —— `result.json` 与 `report.md` 照常写入，'
+      + '只是不再自动开页面。',
+    getter: 'getTestResultPageMode',
+  },
 
   // ── MCP 服务器 ──────────────────────────────────────────────
   'mcp.enabled': {

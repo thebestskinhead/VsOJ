@@ -64,7 +64,7 @@ const pages = sources
   .map(s => ({ rel: s.rel, docs: count(s.text, '<!DOCTYPE html>'), cs: count(s.text, 'color-scheme'), white: s.text.includes('#fff') }))
   .filter(p => p.docs > 0);
 
-check('含内联页面的文件数', pages.length, 6);
+check('含内联页面的文件数', pages.length, 7);
 check('每个页面都有 color-scheme', pages.filter(p => p.cs !== p.docs).map(p => `${p.rel}(${p.docs}/${p.cs})`), []);
 check('每个页面都指定了白底', pages.filter(p => !p.white).map(p => p.rel), []);
 

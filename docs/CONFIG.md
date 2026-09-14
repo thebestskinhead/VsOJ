@@ -49,7 +49,7 @@
 
 ## 2. 全部配置项
 
-共 27 项。**结构**（键名 / 类型 / 默认值）由 `package.json` 生成，**语义**（取值 / 示例 / 坑）来自 `src/config/manual.ts`，两者由一致性测试保证不脱节。
+共 28 项。**结构**（键名 / 类型 / 默认值）由 `package.json` 生成，**语义**（取值 / 示例 / 坑）来自 `src/config/manual.ts`，两者由一致性测试保证不脱节。
 
 | 配置项 | 类型 | 默认值 | 用途 | 标记 |
 |---|---|---|---|---|
@@ -80,6 +80,7 @@
 | `oj.test.timeoutMs` | number | `10000` | 单个用例的运行超时（毫秒） |  |
 | `oj.test.maxOutputBytes` | number | `67108864` | 单个用例的输出体积上限（字节） |  |
 | `oj.test.maxMemoryBytes` | number | `2147483648` | 单个用例的驻留内存上限（字节） |  |
+| `oj.test.resultPage` | string | `"always"` | 跑完测试后是否弹出结果页 |  |
 
 ### 明细
 
@@ -332,6 +333,17 @@
 - **设置面板原文**：单个用例的驻留内存上限（字节，宽松看门狗，1 秒轮询一次）。
 - **读取处**：`getTestLimits()`
 
+#### `oj.test.resultPage`
+
+- **用途**：跑完测试后是否弹出结果页
+- **类型**：`string`｜**默认值**：`"always"`｜**可选值**：`always` / `onFailure` / `never`
+- **取值**：`always` / `onFailure` / `never`
+- **说明**：结果页是插件自绘的页面（两级：用例列表 → 期望 / 实际 / 差异明细），`always` 每次都弹、`onFailure` 只在有失败或没跑起来时弹、`never` 不弹。**全通过时页面不抢焦点**，只有失败或异常才把光标夺过去。
+- **示例**：`always`
+- ⚠️ **坑**：设成 `never` 不影响判定与产物 —— `result.json` 与 `report.md` 照常写入，只是不再自动开页面。
+- **设置面板原文**：跑完本地测试后是否弹出结果页：`always` 每次都弹（全通过也不抢焦点）、`onFailure` 只在有失败或没跑起来时弹、`never` 不弹（结果仍写入 `result.json` / `report.md`）。
+- **读取处**：`getTestResultPageMode()`
+
 ### MCP 服务器
 
 #### `oj.mcp.enabled`
@@ -459,6 +471,7 @@
 - **`oj.test.searchDirs`**：**这是「AI 扫描本机后最该写的地方」**：插件不内置任何个人环境路径，编译器不在 PATH 时只有靠它或绝对路径才找得到。
 - **`oj.test.reuseBuild`**：开着它时，改的是**别的文件**（如被 include 的头文件）不会让哈希变化，可能跑到旧产物；调试前想要 100% 新鲜就用「强制重新编译」。
 - **`oj.test.timeoutMs`**：调太小会让正常但偏慢的解法（暴力枚举）频繁被砍，看起来像程序有 bug。
+- **`oj.test.resultPage`**：设成 `never` 不影响判定与产物 —— `result.json` 与 `report.md` 照常写入，只是不再自动开页面。
 
 ### 声明了但当前版本没生效
 

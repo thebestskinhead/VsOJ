@@ -19,6 +19,7 @@
 | S6.4 | 2026-09-14 | 自定义任务（`oj` 类型）+ 终端桥：编译 / 本地测试 / 强制重编译 / **跑一下** | `npm run test:tasks` 43 项（真实 g++ 端到端） |
 | S6.5 | 2026-09-14 | **配置说明书 + AI 初始化工具**（MCP：`get_config_manual` / `init_config`），`docs/CONFIG.md` 随插件发布 | `npm test` 21 套件；`test:config-manual` 44、`test:config-writer` 85、`test:config-tools` 54 |
 | S6.5.1 | 2026-09-14 | **修**：题目列表标题栏按钮重启后全消失（`oj.inContest` 派生 + 启动恢复） | `npm test` 22 套件；`test:context-sync` 13 项 |
+| S6.6 | 2026-09-14 | **结果页 webview**：两级明细（列表 → 期望/实际/差异）、过期标记、零脚本、全通过不抢焦点 | `npm test` 23 套件；`test:result-page` 61 项 |
 
 ---
 
@@ -307,6 +308,47 @@ context key 回到未定义 → 三个按钮的 `when` 全部不成立 → 标�
 无 cid 不误报、静态断言「inContest 只允许从 state.ts 发出」、
 「`syncOfflineContext` 不得再变死代码」、「logout 清 cid」。
 `npm test` → **22 套件全通过**。
+
+---
+
+## S6.6 — 结果页 webview（2026-09-14）
+
+**做了什么**
+- 新增 `src/webview/testResultWebview.ts`（507 行）：
+  - `buildResultHtml(model)` —— **纯函数**渲染整页（可脱离 VS Code 单测）。
+  - `resultPagePlan(mode, r)` —— 弹出 / 聚焦策略（纯函数）。
+  - `buildResultModel(r, ctx)` —— 引擎结构 `TestRunResult` → 页面模型。
+  - `TestResultWebview` —— 面板薄壳（`createWebviewPanel` / `reveal` / `dispose`）。
+- `runner.ts`：把原本私有的 `runtimeText()` 与新增的 `casePreviews()` 改为导出，
+  报告（markdown）与结果页（webview）共用同一份「运行事实文案 + 三份内容读取与截断」。
+- 新配置 `oj.test.resultPage`（`always` / `onFailure` / `never`，默认 `always`）：
+  `package.json` + `config.ts#getTestResultPageMode` + 说明书条目 + 重新生成的 `docs/CONFIG.md`。
+- `extension.ts`：`runLocalTests` 跑完（含**没跑起来**的情况）后按配置弹结果页；
+  `readSourceText()` 同步读源码（**内存文档优先**）供「代码已改动」判定。
+- `test/theme.test.js`：内联页面数 6 → 7（新页面必须自带亮色声明，被 C11 守住）。
+
+**页面长什么样**
+- 顶部是一枚结论徽章（全部通过 / N 组不通过 / 没能跑起来）+ 题目与工具链元信息；
+  代码改动后多一条黄条「这份结果可能已过期」。
+- 一级：用例列表（状态徽章 · 耗时 · 期望/实际字节 · 运行事实），用 `<details>` 展开。
+- 二级：**输入 / 期望输出 / 实际输出**三栏并排（超长截断并标注）+ 差异定位
+  （第几行 · 该行第几字节 · 字节偏移）+ 引擎给的差异原话 + stderr 尾部。
+- 「没能开始」也有专门的屏：缺工具链（点名命令 + 探测过哪些位置 + 改哪个配置）、
+  编译失败（命令 + 编译器原文）、没有用例（去哪拿样例 + 逐条列出跳过项）。
+
+**三条设计决定（已写成契约 C24–C26）**
+1. **零脚本**：`details/summary` 展开，面板不开 `enableScripts`、无消息通道。
+   页面上显示的是**程序输出**——不可信内容，能展示但不能被执行。
+2. **与报告同源**：内容读取与文案复用引擎函数，避免两处截断上限/措辞分叉。
+3. **全通过不抢焦点**：对 D13「弹出并聚焦」的细化 —— 用户多半正在改代码，
+   页面自己刷新就好；失败或没跑起来才夺焦点。
+
+**验证**：`test/test-result-page.test.js` 61 项断言（策略表、模型映射、亮色与注入转义、
+两级结构、三种「未能开始」屏、过期与截断、`casePreviews` 真文件读写、面板零脚本静态检查）。
+`npm test` → **23 套件全通过**。
+
+**顺带产出**：`outputs/本地测试结果页-预览.html`（用真实渲染函数生成的离线预览，
+含 2 组不通过 + 1 组看门狗超时 + 1 组跳过 + 过期条）。
 
 ---
 

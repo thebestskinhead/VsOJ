@@ -782,27 +782,61 @@ export function buildReport(r: TestRunResult, deps: RunnerDeps): string {
   return L.join('\n');
 }
 
-function runtimeText(c: CaseResult): string {
+function runtimeTextOf(c: CaseResult): string {
   if (c.runtime.watchdog) { return `看门狗终止（${c.runtime.watchdog}）`; }
   if (c.runtime.exitCode !== 0) { return `退出码 ${c.runtime.exitCode}`; }
   return '正常结束';
 }
 
+/** 运行事实的中文一行话 —— 报告（markdown）与结果页（webview）**共用同一口径**（契约 C12） */
+export function runtimeText(c: CaseResult): string { return runtimeTextOf(c); }
+
+/** 一份展示文本：读到了什么、有没有截断、文件是否根本不存在 */
+export interface OutputPreview {
+  text: string;
+  truncated: boolean;
+  /** 文件缺失（语言为「程序没产出」时为真） */
+  missing: boolean;
+}
+
+/**
+ * 读一次用例的三份文本：**输入 / 期望输出 / 实际输出（归一化后）**。
+ *
+ * 报告与结果页共用它，理由是两处都要展示同一批内容 —— 各写一份读取与截断逻辑，
+ * 迟早出现「报告里显示 1200 字节、页面上 4000 字节」这类口径分叉（契约 C12）。
+ *
+ * @param maxBytes 展示上限；超长截断并标注（绝不把 64MB 输出塞进页面）
+ */
+export function casePreviews(
+  deps: Pick<RunnerDeps, 'tempDir' | 'cases'>,
+  c: CaseResult,
+  maxBytes = 2048,
+): { input: OutputPreview; expected: OutputPreview; actual: OutputPreview } {
+  const spec = deps.cases.find(x => x.index === c.index);
+  return {
+    input: readPreview(spec?.inputFile, maxBytes),
+    expected: readPreview(spec?.expectedFile, maxBytes),
+    actual: readPreview(nodePath.join(deps.tempDir, `${c.index}.out`), maxBytes),
+  };
+}
+
+function readPreview(file: string | undefined, maxBytes: number): OutputPreview {
+  if (!file) { return { text: '', truncated: false, missing: true }; }
+  const buf = safeRead(file);
+  if (!buf) { return { text: '', truncated: false, missing: true }; }
+  const p = preview(buf, maxBytes);
+  return { text: p.text, truncated: p.truncated, missing: false };
+}
+
 function expectedActualPreview(deps: RunnerDeps, c: CaseResult): string[] {
   const out: string[] = [];
-  const tempDir = deps.tempDir;
-  const normOut = nodePath.join(tempDir, `${c.index}.out`);
-  const expected = safeRead(deps.cases.find(x => x.index === c.index)?.expectedFile ?? '');
-  const actual = safeRead(normOut);
-  if (expected) {
-    const p = preview(expected, 1200);
-    out.push('', '期望输出：', '', '```', p.text + (p.truncated ? '\n…（已截断）' : ''), '```');
+  const pv = casePreviews(deps, c, 1200);
+  if (!pv.expected.missing) {
+    out.push('', '期望输出：', '', '```', pv.expected.text + (pv.expected.truncated ? '\n…（已截断）' : ''), '```');
   }
-  if (actual) {
-    const p = preview(actual, 1200);
-    out.push('', '实际输出（归一化后）：', '', '```', p.text + (p.truncated ? '\n…（已截断）' : ''), '```');
-  }
-  if (!actual) {
+  if (!pv.actual.missing) {
+    out.push('', '实际输出（归一化后）：', '', '```', pv.actual.text + (pv.actual.truncated ? '\n…（已截断）' : ''), '```');
+  } else {
     out.push('', '实际输出：（空 —— 程序没有产出任何内容）');
   }
   return out;

@@ -198,6 +198,16 @@
           "type": "number",
           "default": 2147483648,
           "markdownDescription": "单个用例的驻留内存上限（字节，宽松看门狗，1 秒轮询一次）。"
+        },
+        "oj.test.resultPage": {
+          "type": "string",
+          "enum": [
+            "always",
+            "onFailure",
+            "never"
+          ],
+          "default": "always",
+          "markdownDescription": "跑完本地测试后是否弹出结果页：`always` 每次都弹（全通过也不抢焦点）、`onFailure` 只在有失败或没跑起来时弹、`never` 不弹（结果仍写入 `result.json` / `report.md`）。"
         }
       }
     },

@@ -132,6 +132,20 @@ export function isBuildReuseEnabled(): boolean {
   return getConfig().get<boolean>('test.reuseBuild', false) === true;
 }
 
+/** 跑完本地测试后的结果页行为 */
+export type TestResultPageMode = 'always' | 'onFailure' | 'never';
+
+/**
+ * 结果页弹出策略（默认 `always`）。
+ *
+ * 用户决策：**每次测试都弹**（D13）——刷题时「跑完看不到结果」会让人反复手动开报告。
+ * 认不出的值一律退回默认，避免配置写错就静默不弹。
+ */
+export function getTestResultPageMode(): TestResultPageMode {
+  const v = getConfig().get<string>('test.resultPage', 'always');
+  return v === 'onFailure' || v === 'never' ? v : 'always';
+}
+
 /** 看门狗默认阈值（可被 toolchains.json 里单个工具链的字段覆盖） */
 export function getTestLimits(): { timeoutMs: number; maxOutputBytes: number; maxMemoryBytes: number } {
   const cfg = getConfig();

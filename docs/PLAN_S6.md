@@ -225,6 +225,18 @@ renderResultPage()                                          ← D12/D13
 - 打开时机默认「每次测试都弹」（配置 `oj.test.resultPage` 可改 `always|onFailure|never`）。
 - 过期判定：当前源文件哈希 ≠ `result.json.sourceHash` → 顶部标「代码已改动，结果可能已过期」。
 
+**S6.6 实现时定的四条**（都已落进契约）：
+
+1. **零脚本**（C24）：展开用原生 `details/summary`，面板不开 `enableScripts`。
+   页面要显示的是**程序输出**，那是不可信内容 —— 能展示，但一行都不该被执行。
+2. **与报告同源**（C25）：运行事实与三份内容分别复用引擎的 `runtimeText()` / `casePreviews()`
+   （为此把 runner 里原本私有的两个函数抽成导出）。各写一份读取逻辑，迟早在截断上限或
+   文案口径上分叉。
+3. **全通过不抢焦点**（C26）：这是对 D13「弹出并聚焦」的细化 —— 刷题时用户多半正在改代码，
+   页面自己刷新就好；只有失败或没跑起来才值得把光标夺过去。
+4. **「没能开始」也要有页面**：缺工具链 / 编译失败 / 没有用例，原先只弹一句警告。
+   现在这三种情况各有一屏：缺什么命令、探测过哪些位置、编译器原文、以及「去哪拿样例」。
+
 ### 5.9 非 ASCII 产物路径：相对路径为主，跨盘才退回中转（`asciiSafeOutput`）
 
 工具链可声明 `asciiSafeOutput`：**「传给编译器的产物路径必须纯 ASCII」**。
@@ -360,7 +372,7 @@ Java/Python 不声明该位（它们往中文路径写产物本来就正常，�
 | S6.3 ✅ | 接线层：7 个配置项、选工具链、发现样例、命令与右键菜单 | `src/test/wiring.ts`、`extension.ts`、`package.json` | `test/test-wiring.test.js`（44） |
 | S6.4 ✅ | 自定义任务（`oj` 类型）+ 终端桥：编译 / 本地测试 / 强制重编译 / **跑一下** | `src/test/tasks.ts`、`src/test/terminal.ts` | `test/tasks.test.js`（43，真实 g++ 端到端） |
 | S6.5 ✅ | **配置说明书 + AI 初始化工具**（用户追加）：`get_config_manual` / `init_config`，说明书生成与漂移断言 | `src/config/manual.ts`、`writer.ts`、`tools.ts`、`wiring.ts`、`scripts/gen-config-docs.js` | `test/config-manual.test.js`（44）、`test/config-writer.test.js`（85）、`test/config-tools.test.js`（54） |
-| S6.6 | 结果页 webview（两级、亮色） | `src/webview/testResultWebview.ts` | `test/test-result-page.test.js` |
+| S6.6 ✅ | 结果页 webview：两级明细、过期标记、零脚本、全通过不抢焦点 | `src/webview/testResultWebview.ts`（+ `runner.ts` 抽出 `casePreviews` / `runtimeText` 供报告与页面共用） | `test/test-result-page.test.js`（61） |
 | S6.7 | MCP 三工具：编译 / 本地测试 / 读最近结果 + 读题目图片 | `src/mcp/tools.ts`、`server.ts` | `test/mcp-test-tools.test.js` |
 | S6.8 | 工具链可视化编辑页 + macOS 内存探测回退 + 文档收口 | `src/webview/toolchainWebview.ts` 等 | `test/toolchain-page.test.js` |
 
@@ -397,6 +409,12 @@ Java/Python 不声明该位（它们往中文路径写产物本来就正常，�
   写回文件时**只写覆盖字段**。非内置 `id` 仍要求完整定义。
 - **C15** 引擎不得出现任何语言名判断：语言差异只能体现为 `ToolchainDef` 里的声明
   （`kind` / 命令模板 / 能力位）。
+- **C24** 结果页**零脚本**：不开 `enableScripts`、不注册消息通道。页面里的程序输出是不可信内容，
+  只能被展示，不能被执行（容器标签用 `details/summary` 展开，不靠 JS）。
+- **C25** 结果页的文案与内容读取**必须与 `report.md` 同源**：运行事实用 `runtimeText()`、
+  输入/期望/实际用 `casePreviews()`，不得在视图层另写一份读取与截断逻辑。
+- **C26** 结果页的弹出与聚焦由 `oj.test.resultPage` 决定（`always` / `onFailure` / `never`）；
+  **全通过时不抢焦点**（页面照常刷新），只有失败或没跑起来才把焦点夺过去。
 
 ---
 
@@ -420,9 +438,9 @@ S6 的优势是引擎本身不依赖 vscode，所以可以做**真端到端**：
 **新增**
 
 - `src/test/toolchain.ts`、`src/test/compare.ts`、`src/test/runner.ts`、`src/test/watchdog.ts`
-- `src/test/wiring.ts`（S6.3）、`src/test/taskTemplate.ts`（S6.6）
-- `src/webview/testResultWebview.ts`（S6.4）、`src/webview/toolchainWebview.ts`（S6.7）
-- `src/utils/testConfig.ts`（新增配置读取，避免 `config.ts` 继续膨胀）
+- `src/test/wiring.ts`（S6.3）、`src/test/taskTemplate.ts`（S6.6 未做，任务模板直接写在 `src/test/tasks.ts` 里）
+- `src/webview/testResultWebview.ts`（S6.6）、`src/webview/toolchainWebview.ts`（S6.8）
+- `src/utils/testConfig.ts`（**未拆**：`config.ts` 停在 190 行，先不为了「避免膨胀」而拆）
 - `test/{toolchain,compare,runner,test-wiring,test-result-page,mcp-test-tools,task-template,toolchain-page}.test.js`
 
 **修改**

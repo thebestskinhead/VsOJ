@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
 import { apiClient } from './api/client';
 import { AuthService } from './api/auth';
 import { ContestService } from './api/contest';
@@ -10,7 +11,7 @@ import {
   getBaseUrl, getStatusViewMode, getMcpEnabled, getMcpPort,
   getKeepAliveIntervalMs, getSessionProbeIntervalMs, getAutoRelogin,
   getAutoReplaySubmit, isOfflineMode, isCacheEnabled, getCacheTtlMs, getStaleTtlMs,
-  isProjectEnabled, isLazyInitEnabled, getSourceFileName,
+  isProjectEnabled, isLazyInitEnabled, getSourceFileName, getTestResultPageMode,
 } from './utils/config';
 import { ContestTreeProvider } from './views/contestTree';
 import { ProblemTreeProvider } from './views/problemTree';
@@ -19,6 +20,7 @@ import { LoginWebview } from './webview/loginWebview';
 import { AccountWebview } from './webview/accountWebview';
 import { SubmitWebview } from './webview/submitWebview';
 import { ProblemWebview } from './webview/problemWebview';
+import { TestResultWebview, resultPagePlan } from './webview/testResultWebview';
 import { LANGUAGE_EXT, ProblemBrief } from './types';
 import { initDebugChannel, showDebugChannel, clearDebugChannel, setDebugEnabled, isDebugEnabled, logInfo } from './utils/debug';
 import { McpServer } from './mcp/server';
@@ -350,6 +352,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   problemWebviewRef = problemWebview;
   const statusPanel = new StatusPanel(submitService, state);
 
+  /**
+   * 结果页（S6.6）。判过期要读当前源文件 —— 优先内存中的文档，
+   * 这样「改了但没保存」也会被标成「结果可能已过期」。
+   */
+  const resultWebview = new TestResultWebview({
+    readSource: (file) => readSourceText(file),
+    log: (m) => logInfo(m),
+  });
+
   // ==========================================
   // 会话自愈编排
   // 说明：以下均为函数声明（提升），便于被早期注册的监听器/命令引用。
@@ -489,6 +500,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     } catch {
       return '';
     }
+  }
+
+  /**
+   * 同步读源码（结果页判「代码已改动」用）。
+   *
+   * 与 `readSourceForReplay` 同一优先级：**内存文档优先**，
+   * 这样「改了但还没保存」也会被算成代码已改动 —— 那份测试结果确实对不上当前的代码。
+   */
+  function readSourceText(sourceFile: string): string | undefined {
+    const open = vscode.workspace.textDocuments.find(d => d.fileName === sourceFile);
+    if (open) { return open.getText(); }
+    try { return fs.readFileSync(sourceFile, 'utf8'); } catch { return undefined; }
   }
 
   /** 重新登录成功后：恢复比赛/题目上下文 → 打开原题目 → 回到提交页 */
@@ -1289,12 +1312,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       ].join('\n'));
 
       if (!r.ok) {
+        // 结果页照常弹：这一屏正好把「缺什么命令 / 编译器怎么报错」摊开
+        await openResultPage(r, deps);
         showDebugChannel();
         void vscode.window.showErrorMessage(
           `[OJ] ${r.build.ok ? summary : '测试没能跑起来'}` + (relReport ? `　报告：${relReport}` : ''),
         );
         return;
       }
+
+      await openResultPage(r, deps);
 
       if (r.summary.failed === 0) {
         void vscode.window.showInformationMessage(`[OJ] ${summary}：全部通过`);
@@ -1305,6 +1332,27 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(r.reportFile));
       }
     });
+  }
+
+  /**
+   * 按配置弹出结果页（D13）。
+   *
+   * 「全通过就不抢焦点」是刻意的：刷题时用户多半正在改代码，
+   * 页面自己更新就好；只有失败或没跑起来才值得把光标夺过去。
+   */
+  async function openResultPage(r: TestRunResult, deps: RunnerDeps): Promise<void> {
+    const plan = resultPagePlan(getTestResultPageMode(), r);
+    if (!plan.open) { return; }
+    try {
+      await resultWebview.show(r, {
+        focus: plan.focus,
+        paths: deps,
+        missingTools: { missing: deps.missing, tried: deps.tried },
+      });
+    } catch (e: any) {
+      // 结果页只是展示层，它出问题不该让一次已经跑完的测试看起来像失败
+      logInfo(`[test] 结果页打开失败：${e?.message ?? e}`);
+    }
   }
 
   // oj.test.compile — 编译当前题目（按配置决定是否复用产物）
@@ -1568,6 +1616,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     contestTree,
     problemTree,
     { dispose: () => problemWebview.dispose() },
+    { dispose: () => resultWebview.dispose() },
     { dispose: () => statusPanel.dispose() },
     { dispose: () => { disposeMcpChannel(); } },
   );
