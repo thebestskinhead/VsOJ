@@ -2,6 +2,13 @@
 .vscode-test/**
 src/**
 scripts/**
+test/**
 .gitignore
+.gitattributes
+.codebuddy/**
+.vsoj/**
 tsconfig.json
 *.vsix
+
+# 比赛项目文件夹（<cid>-<标题>）：本机开发时的工作数据，不能进包
+[0-9]*-*/**
