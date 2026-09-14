@@ -466,7 +466,8 @@
     "test:config": "node test/config-consistency.test.js",
     "test:theme": "npm run compile && node test/theme.test.js",
     "test:toolchain": "npm run compile && node test/toolchain.test.js",
-    "test:compare": "npm run compile && node test/compare.test.js"
+    "test:compare": "npm run compile && node test/compare.test.js",
+    "test:runner": "npm run compile && node test/runner.test.js"
   },
   "devDependencies": {
     "@types/cheerio": "^0.22.35",
