@@ -381,7 +381,10 @@ export function buildStatusHtml(m: StatusPageModel): string {
   @keyframes spin { to { transform: rotate(360deg); } }
   /* 「只看本题」纯客户端过滤：只藏行，不重新请求 —— 切回来是瞬时的 */
   body.only-current tr[data-match="0"] { display: none; }
-  .detail { margin: 9px 0; padding: 10px 12px; background: #fafafa;
+  /* 判题详情：占满一整行（8 列合并），内部再套一层带边框的盒子 */
+  .detailrow > td { padding: 0 0 10px; border-bottom: none; white-space: normal; }
+  .detailrow:hover > td { background: transparent; }
+  .detail { padding: 10px 12px; background: #fafafa;
             border: 1px solid #e6e6e6; border-left: 4px solid #9e9e9e; border-radius: 4px; }
   .detail .dhead { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
   pre { margin: 0; padding: 8px 10px; background: #f7f7f7; border: 1px solid #e6e6e6; border-radius: 3px;
@@ -401,7 +404,6 @@ export function buildStatusHtml(m: StatusPageModel): string {
   </div>
   <div id="notice" class="notice"></div>
   <div class="numbers" id="numbers">${numbersHtml(m)}</div>
-  <div id="detail" class="detail" hidden></div>
   ${source}
   <table>
     <thead><tr>
@@ -430,22 +432,33 @@ export function buildStatusHtml(m: StatusPageModel): string {
   }
 
   function hideDetail() {
-    var d = $('detail');
-    if (!d) { return; }
-    d.hidden = true;
-    d.innerHTML = '';
-    d.removeAttribute('data-sid');
+    var row = document.getElementById('detailRow');
+    if (row && row.parentNode) { row.parentNode.removeChild(row); }
   }
 
+  // 详情必须挂成表格的一整行（tr + td colspan=8）。
+  // 早先这里往 tbody 里直接塞了个 div：DOM 不报错，但渲染时浏览器会给它套一层
+  // 匿名 table-row/cell，宽度塌成第一列（提交编号）那么窄 —— 内容全挤在左边。
   function showDetail(d) {
-    var el = $('detail');
-    el.innerHTML = d.html;
-    el.hidden = false;
-    el.setAttribute('data-sid', String(d.submitId));
-    // 把详情贴在那一行下面，而不是甩到页面最底部
+    hideDetail();
     var tr = document.querySelector('tr[data-sid="' + d.submitId + '"]');
-    if (tr && tr.parentNode) { tr.parentNode.insertBefore(el, tr.nextSibling); }
-    el.scrollIntoView({ block: 'nearest' });
+    if (!tr || !tr.parentNode) { return; }
+
+    var row = document.createElement('tr');
+    row.id = 'detailRow';
+    row.className = 'detailrow';
+
+    var td = document.createElement('td');
+    td.colSpan = 8;
+
+    var box = document.createElement('div');
+    box.className = 'detail';
+    box.innerHTML = d.html;
+
+    td.appendChild(box);
+    row.appendChild(td);
+    tr.parentNode.insertBefore(row, tr.nextSibling);
+    row.scrollIntoView({ block: 'nearest' });
   }
 
   function pendingVisible() {
@@ -491,6 +504,9 @@ export function buildStatusHtml(m: StatusPageModel): string {
       var only = !document.body.classList.contains('only-current');
       document.body.classList.toggle('only-current', only);
       el.textContent = only ? '显示全部题目' : '只看本题';
+      // 详情是独立一行，跟着它的行一起收起，免得留下一条无主的详情
+      hideDetail();
+      notice('');
       vscode.postMessage({ command: 'filter', onlyCurrent: only });
       return;
     }

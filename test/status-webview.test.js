@@ -252,6 +252,14 @@ ok('页面不含页脚说明文字', !page.includes('<footer>'));
 ok('唯一开脚本的页面：注入脚本在用 acquireVsCodeApi', page.includes('acquireVsCodeApi()'));
 ok('表格列与站点一致（提交编号 / 题目 / 结果 …）', page.includes('<th>提交编号</th>') && page.includes('<th>提交时间</th>'));
 ok('AC 行可点开详情', page.includes('data-act="detail"'));
+
+// 详情必须挂成表格的一整行。曾经这里往 <tbody> 里直接插 <div>：
+// DOM 不报错，但渲染时被套匿名 table-row/cell，宽度塌成第一列 → 内容全挤左边。
+ok('页面上不再有游离的 detail 占位 div', !page.includes('id="detail"'));
+ok('详情容器是新建的 <tr>', page.includes("row.id = 'detailRow'") && page.includes("row.className = 'detailrow'"));
+ok('详情单元格跨满 8 列', page.includes('td.colSpan = 8'));
+ok('详情行插在对应提交那一行之后', page.includes('tr.parentNode.insertBefore(row, tr.nextSibling)'));
+ok('判定详情单元格样式的规则存在', page.includes('.detailrow > td'));
 check('numbers 里待判定计数', numbersHtml(model).includes('1</b> 判题中'), true);
 
 // 整页不得出现「不转义就把站点文本插进去」的痕迹
