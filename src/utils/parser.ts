@@ -287,6 +287,11 @@ export interface StatusAjaxRow {
  *
  * **不是这个形状一律返回 `null`** —— 会话失效时这个地址会吐回登录页 HTML，
  * 那种情况绝不能当成「0 分」吞掉。
+ *
+ * 实测的一个站点怪癖（不算解析失败，故不特殊处理）：**不存在的 solution_id**
+ * 会正经回一行 `10,0,0,unknown,0`（即「运行错误 · 判题机 unknown」）。
+ * 正常流程里我们只问状态表里出现过的编号，所以碰不到；写在这里是免得将来
+ * 顺手拿它做「探活」时被这行骗到。
  */
 export function parseStatusAjaxRow(text: string): StatusAjaxRow | null {
   const raw = (text || '').trim();
