@@ -12,6 +12,8 @@
  *   - 探测（probe）：默认 10 分钟一次，复用 `AuthService.isLoggedIn()`
  *     （判定口径与手动刷新完全一致，不引入第二套标准）
  *   - 心跳连续失败达阈值才触发探测，避免把「网络抖动」误判为「登录过期」
+ *   - 会话切换（{@link SessionKeeper.sessionRenewed}）：登录成功即作废上一会话的
+ *     探测结论，避免状态栏挂着旧判定、以及新会话失效时不再上报
  *
  * 本模块依赖通过 {@link KeeperDeps} 注入，因而是**纯时序逻辑**，可脱离
  * VS Code 运行时用桩测试（见 test/session-keeper.test.js）。
@@ -127,6 +129,39 @@ export class SessionKeeper {
       failureThreshold: opts.failureThreshold ?? DEFAULT_FAILURE_THRESHOLD,
     };
     if (this.deps.shouldRun()) { this.start(); }
+  }
+
+  /**
+   * 登录成功 → 会话已换新。
+   *
+   * 上一个会话留下的判定属于**会话级状态**，必须随新会话一并作废，否则：
+   *   - `lastProbeOk=false` 会让状态栏一直挂着「登录已过期」，直到下一次定时探测
+   *     （最长一个探测间隔）才被纠正 —— 用户看到的就是「登录成功了但状态没刷新」；
+   *   - `expiredReported=true` 会让新会话再次失效时**不再上报**，自动重登录提示静默丢失。
+   *
+   * 有效性结论直接取「登录成功」本身，不再多发一次请求：登录前 `AuthService.login()`
+   * 已用与探测完全相同的口径（`/loginpage.php` 是否含 `logout.php`）确认过，
+   * 这里只需要把时点记下，供状态栏展示「最近验证」。
+   *
+   * 未在保活时顺带启动（`start()` 内部即会心跳一次），已在保活时立刻补一次心跳，
+   * 把新会话的 mtime 续上而不必等下一个周期。
+   */
+  sessionRenewed(): void {
+    this.status.lastProbeOk = true;
+    this.status.lastProbeAt = Date.now();
+    this.status.consecutiveBeatFailures = 0;
+    this.status.lastError = undefined;
+    this.expiredReported = false;
+
+    if (this.deps.shouldRun()) {
+      if (this.running) {
+        void this.beat();
+      } else {
+        this.start();
+      }
+    }
+    // 离线 / 未登录时也要重画一次：状态栏要跟着登录态走
+    this.deps.onTick?.();
   }
 
   /**

@@ -517,7 +517,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   async function onLoginSuccess(): Promise<void> {
     await vscode.commands.executeCommand('setContext', 'oj.loggedIn', true);
     contestTreeProvider.refresh();
-    startKeeperIfNeeded();
+    // 换的是新会话：作废上一会话遗留的探测结论并立刻接上心跳，
+    // 右下角状态栏随之显示新会话的状态，而不是等下一次定时探测才纠正
+    sessionKeeper.sessionRenewed();
+    renderSessionStatus();
     vscode.window.showInformationMessage('[OJ] 登录成功');
     await replayPendingIntent();
   }

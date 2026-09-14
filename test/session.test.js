@@ -4,7 +4,7 @@
  * 覆盖三部分：
  *  A. 失效判定纯函数（guard.ts）—— 逐条对齐 docs/SITE_ANALYSIS.md §5 的实测信号
  *  B. 意图重放（SessionGuard）—— 持久化 / 过期 / 一次性消费
- *  C. 保活时序（SessionKeeper）—— 心跳、失败升级探测、去重上报、停止
+ *  C. 保活时序（SessionKeeper）—— 心跳、失败升级探测、去重上报、会话切换、停止
  *  D. 端到端：用本地 HTTP 服务器真实复现站点响应，验证
  *     SubmitService 能把「会话失效」从「其它失败」中区分出来
  *
@@ -263,6 +263,76 @@ async function testKeeper() {
     await sleep(60);
     k.stop();
     ok('restart 后按新间隔心跳', beats > before);
+  }
+
+  // C8 登录成功（会话换新）→ 上一会话的判定作废
+  {
+    let serverLoggedIn = true;
+    let stateLoggedIn = true;
+    let expired = 0;
+    const k = new SessionKeeper({
+      beat: async () => {},
+      // 与 AuthService.isLoggedIn() 同口径：读站点，再把结果写回登录态
+      probe: async () => { stateLoggedIn = serverLoggedIn; return serverLoggedIn; },
+      shouldRun: () => stateLoggedIn,
+      onExpired: () => { expired++; },
+      log: () => {},
+    }, { keepAliveIntervalMs: 0, probeIntervalMs: 0 });
+    k.start();
+
+    serverLoggedIn = false;          // 会话在窗口期过期
+    await k.probeNow();
+    check('过期后 lastProbeOk=false', k.snapshot().lastProbeOk, false);
+    check('过期上报一次', expired, 1);
+
+    serverLoggedIn = true;           // 用户重新登录成功
+    stateLoggedIn = true;
+    k.sessionRenewed();
+    check('登录后 lastProbeOk 不再挂着旧结论', k.snapshot().lastProbeOk, true);
+    ok('登录后 lastProbeAt 已刷新', !!k.snapshot().lastProbeAt);
+    check('登录后清掉上一会话的错误', k.snapshot().lastError, undefined);
+    check('登录后失败计数归零', k.snapshot().consecutiveBeatFailures, 0);
+
+    serverLoggedIn = false;          // 新会话再次过期
+    await k.probeNow();
+    check('新会话失效仍能再上报', expired, 2);
+    k.stop();
+  }
+
+  // C9 登录时会话切换的连带动作：未保活则接管、离线则只重画 UI
+  {
+    let beats = 0;
+    let ticks = 0;
+    const k = new SessionKeeper({
+      beat: async () => { beats++; },
+      probe: async () => true,
+      shouldRun: () => true,
+      onExpired: () => {},
+      onTick: () => { ticks++; },
+      log: () => {},
+    }, { keepAliveIntervalMs: 60000, probeIntervalMs: 0 });
+    k.sessionRenewed();
+    await sleep(20);
+    check('未在保活时登录 → 保活接管', k.isRunning, true);
+    ok('登录即补一次心跳', beats >= 1);
+    ok('登录后立刻重画一次状态栏', ticks >= 1);
+    check('登录即视为刚验证过', k.snapshot().lastProbeOk, true);
+    k.stop();
+
+    let ticks2 = 0;
+    const k2 = new SessionKeeper({
+      beat: async () => {},
+      probe: async () => true,
+      shouldRun: () => false,        // 离线 / 未登录
+      onExpired: () => {},
+      onTick: () => { ticks2++; },
+      log: () => {},
+    }, { keepAliveIntervalMs: 20, probeIntervalMs: 20 });
+    k2.sessionRenewed();
+    await sleep(40);
+    check('离线时不启动保活', k2.isRunning, false);
+    ok('离线时仍重画一次状态栏', ticks2 >= 1);
+    k2.stop();
   }
 }
 

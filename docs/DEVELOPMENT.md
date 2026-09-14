@@ -8,7 +8,7 @@
 ```bash
 npm install
 npm run compile      # 编译
-npm test             # 编译 + 运行全部测试（28 套件 / 1469 项断言，无需 VS Code 运行时）
+npm test             # 编译 + 运行全部测试（28 套件 / 1482 项断言，无需 VS Code 运行时）
 npm run smoke:site   # 真实站点端到端冒烟（需要能访问目标 OJ）
 npm run test:cache   # 仅缓存层（布局 / 新鲜度 / 清理语义）
 npm run test:session # 仅会话层
