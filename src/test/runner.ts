@@ -28,6 +28,7 @@
  */
 
 import * as fs from 'fs';
+import * as os from 'os';
 import * as nodePath from 'path';
 import * as crypto from 'crypto';
 import {
@@ -127,6 +128,8 @@ export interface BuildResult {
   command: string;
   /** 编译产物路径（解释型 = 源文件本身） */
   runnable: string;
+  /** 产物是否经 ASCII 中转目录编译后拷回（见 `ToolchainDef.asciiSafeOutput`） */
+  staged?: boolean;
   /** 编译器输出原文（失败时原样回传，契约 C3） */
   output: string;
 }
@@ -188,6 +191,35 @@ export interface RunnerDeps {
 
   // ---- 注入点（测试用） ----
   runProcessImpl?: typeof runProcess;
+}
+
+/**
+ * 路径是否 ASCII 安全。
+ *
+ * 存在的意义只有一个：MinGW 的 `ld` 在含非 ASCII 的产物路径下会失败（见 `asciiSafeOutput`）。
+ */
+export function isAsciiSafe(p: string): boolean {
+  return !/[^\x00-\x7F]/.test(p);
+}
+
+/**
+ * 找一个 ASCII 安全的暂存目录（`%TEMP%` 优先，用户名含中文时退到系统盘根）。
+ *
+ * 找不到就返回 undefined —— 那时只能照原路径编译，让编译器如实报错，而不是我们瞎猜。
+ */
+export function makeAsciiStagingDir(): string | undefined {
+  const roots = [
+    nodePath.join(os.tmpdir(), 'vsoj-build'),
+    nodePath.join(process.env.SystemDrive || process.env.HOMEDRIVE || 'C:', 'vsoj-build'),
+  ];
+  for (const root of roots) {
+    if (!isAsciiSafe(root)) { continue; }
+    try {
+      fs.mkdirSync(root, { recursive: true });
+      return fs.mkdtempSync(nodePath.join(root, nodePath.sep));
+    } catch { /* 试下一个 */ }
+  }
+  return undefined;
 }
 
 /** 源文件内容哈希（结果过期判定 D14 的依据） */
@@ -362,7 +394,15 @@ export class LocalTestRunner {
       }
     }
 
-    const argv = expandTemplate(def.compile, this.templateVars({ output: product }));
+    // ASCII 中转：工具链声明了 `asciiSafeOutput` 且产物路径含非 ASCII 时，
+    // 把 `{output}` 指到纯 ASCII 暂存目录编译，成功后再把产物复制回 `temp/`。
+    // 实测：MinGW 的 ld 在中文路径下写不出产物，而本项目布局的目录名含中文是常态。
+    const staging = def.asciiSafeOutput === true && !isAsciiSafe(product)
+      ? makeAsciiStagingDir()
+      : undefined;
+    const compileTarget = staging ? nodePath.join(staging, nodePath.basename(product)) : product;
+
+    const argv = expandTemplate(def.compile, this.templateVars({ output: compileTarget }));
     const commandText = argv.join(' ');
     this.log(`编译：${commandText}`);
 
@@ -383,7 +423,25 @@ export class LocalTestRunner {
     });
 
     const output = [readText(stderrLog), readText(stdoutLog)].filter(Boolean).join('\n').trim();
-    const ok = outcome.exitCode === 0 && fs.existsSync(product);
+
+    let ok = outcome.exitCode === 0 && fs.existsSync(compileTarget);
+    let staged = false;
+    if (ok && staging) {
+      try {
+        fs.mkdirSync(nodePath.dirname(product), { recursive: true });
+        fs.copyFileSync(compileTarget, product);
+        staged = true;
+      } catch (e: any) {
+        ok = false;
+        return {
+          ok: false, reused: false, durationMs: outcome.durationMs, command: commandText,
+          runnable: product, output: `${output}\n\n产物已编译成功，但复制回 temp/ 失败：${e.message}`,
+        };
+      }
+    }
+    if (staging) {
+      try { fs.rmSync(staging, { recursive: true, force: true }); } catch { /* 留个目录不致命 */ }
+    }
 
     if (ok) {
       fs.writeFileSync(buildRecord, JSON.stringify({
@@ -391,7 +449,7 @@ export class LocalTestRunner {
       }, null, 2), 'utf8');
     }
 
-    return { ok, reused: false, durationMs: outcome.durationMs, command: commandText, runnable: product, output };
+    return { ok, reused: false, durationMs: outcome.durationMs, command: commandText, runnable: product, output, staged };
   }
 
   private readBuildRecord(file: string): { hash?: string; product?: string; command?: string } | undefined {
@@ -567,6 +625,10 @@ export function buildReport(r: TestRunResult, deps: RunnerDeps): string {
     (r.reason === 'cancelled' ? '（已取消，后续用例未执行）' : ''));
   L.push('');
   L.push(`编译：${r.build.reused ? '复用上次产物（源文件未变）' : `重新编译 ${r.build.durationMs} ms`}`);
+  if (r.build.staged) {
+    L.push('');
+    L.push('> 产物经 ASCII 中转目录编译后拷回 `temp/`：该工具链无法在含非 ASCII 的路径下写产物（MinGW 的 `ld` 实测如此）。');
+  }
   L.push('');
   L.push(`- 编译命令：\`${r.build.command}\``);
   L.push('');

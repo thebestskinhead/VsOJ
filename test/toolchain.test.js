@@ -26,6 +26,10 @@ check('java 认领', T.matchToolchain(builtin, 'Main.java').id, 'java');
 check('不认领的扩展名', T.matchToolchain(builtin, 'notes.txt'), undefined);
 check('解释型没有 compile', builtin.find(d => d.id === 'python').compile, undefined);
 check('compile 为空视为解释型', T.normalizeDef({ id: 'x', extensions: ['.x'], run: '"x" "{runnable}"' }).def.kind, 'interpreted');
+check('C/C++ 声明「产物需 ASCII 安全」（MinGW ld 实测限制）',
+  [builtin[0].asciiSafeOutput, builtin[1].asciiSafeOutput], [true, true]);
+check('Java/Python 不声明该限制（实测它们往中文路径写产物正常）',
+  [builtin[2].asciiSafeOutput, builtin[3].asciiSafeOutput], [undefined, undefined]);
 
 // ── 2. 模板展开 ───────────────────────────────────────────────────────────
 console.log('\n[2] 命令模板 → argv');
@@ -160,6 +164,10 @@ const roundTrip = T.parseToolchains(T.serializeToolchains(builtin)).defs;
 check('序列化→解析往返 id 不变', roundTrip.map(d => d.id), builtin.map(d => d.id));
 check('往返后 compile 保留', roundTrip[0].compile, builtin[0].compile);
 check('往返不写 builtin 字段（由代码补）', 'builtin' in JSON.parse(T.serializeToolchains(builtin)).toolchains[0], false);
+check('asciiSafeOutput 序列化往返保留',
+  T.parseToolchains(T.serializeToolchains([builtin[0]])).defs[0].asciiSafeOutput, true);
+check('未声明的工具链不会被凭空写上 asciiSafeOutput',
+  T.parseToolchains(T.serializeToolchains([builtin[3]])).defs[0].asciiSafeOutput, undefined);
 
 fs.writeFileSync(file, '{ broken', 'utf8');
 const broken = T.effectiveToolchains(file);

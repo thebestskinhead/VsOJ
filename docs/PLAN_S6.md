@@ -79,6 +79,15 @@ S6 的目标就是补上这一步：**一键把本地这份源码跑一遍样例
 5. `cache/paths.ts` 早已预留 `tempDir` / `testDir` / `testResult` / `testReport`，S6 直接采用。
 6. MCP 是 **HTTP server**（默认 9527），`handleToolsCall` 把整个 result 对象原样返回，
    → 新增工具与新增内容类型（如 `image`）只需扩类型，不用改传输层。
+7. **MinGW 的 `ld` 无法在含非 ASCII 的产物路径下创建文件**（写实现时被演示脚本炸出来的）：
+   `cannot open output file ...\3775-新生埧\A-A+B问题\temp\main.exe: No such file or directory`，
+   路径被按 GBK 解释成乱码。对照实测结论：
+   - 同一个源文件、产物路径改成纯 ASCII → **编译成功**（说明只是「写产物」这一步的问题）
+   - 产物**放在**中文路径下 → **运行完全正常**（Bash 与 Node `spawn` 都验证过）
+   - javac 往中文目录写 `.class`、python 跑中文路径脚本 → **都正常**，只有 MinGW 有这个毛病
+   
+   这条尤其要紧，因为本项目布局里**目录名含中文是常态**（`<cid>-<标题>` / `<字母>-<标题>`），
+   而报错长得像「路径不存在」，极容易被误判成代码或配置问题。
 
 ---
 
@@ -101,6 +110,7 @@ interface ToolchainDef {
   timeoutMs?: number;             // 覆盖全局看门狗阈值
   maxOutputBytes?: number;
   maxMemoryBytes?: number;
+  asciiSafeOutput?: boolean;      // 声明「本工具链无法在非 ASCII 路径写产物」（见 §5.9）
   builtin?: boolean;              // 内置不可删，只能改
 }
 
@@ -130,12 +140,12 @@ interface RunResult { exitCode: number | null; watchdog: 'time' | 'size' | 'memo
 
 ### 4.3 内置默认三套（D1）
 
-| id | kind | extensions | compile | run |
-|---|---|---|---|---|
-| `cpp-g++` | compiled | `.cpp .cc .cxx` | `"{gpp}" -O2 -std=c++17 -o "{output}" "{source}"` | `"{runnable}"` |
-| `c-gcc` | compiled | `.c` | `"{gcc}" -O2 -std=c17 -o "{output}" "{source}"` | `"{runnable}"` |
-| `java` | compiled | `.java` | `"{javac}" -encoding UTF-8 -d "{dir}" "{source}"` | `"{java}" -cp "{dir}" {stem}` |
-| `python` | interpreted | `.py` | — | `"{python}" "{runnable}"` |
+| id | kind | extensions | compile | run | asciiSafeOutput |
+|---|---|---|---|---|---|
+| `cpp-g++` | compiled | `.cpp .cc .cxx` | `"{gpp}" -O2 -std=c++17 -o "{output}" "{source}"` | `"{runnable}"` | **true** |
+| `c-gcc` | compiled | `.c` | `"{gcc}" -O2 -std=c17 -o "{output}" "{source}"` | `"{runnable}"` | **true** |
+| `java` | compiled | `.java` | `"{javac}" -encoding UTF-8 -d "{dir}" "{source}"` | `"{java}" -cp "{dir}" {stem}` | — |
+| `python` | interpreted | `.py` | — | `"{python}" "{runnable}"` | — |
 
 `{gpp}` / `{gcc}` / `{javac}` / `{java}` / `{python}` 是**命令位置占位符**：
 解析顺序为「工具链里显式写的 `commands` 绝对路径 → PATH 查找 → 常见安装目录探测」。
@@ -199,6 +209,18 @@ renderResultPage()                                          ← D12/D13
 扫 `samples/*.in` → 排序 → 有配对 `.out` 的进用例表；只有 `.in` 的进 `skipped` 列表，
 报告里明确写「第 3 组只有 3.in、缺 3.out，已跳过（不计入通过率）」。
 
+### 5.9 ASCII 中转（`asciiSafeOutput`）
+
+工具链可以声明「本工具链无法在非 ASCII 路径下写产物」。引擎遇到该声明 + 产物路径含非 ASCII 时：
+
+1. 把 `{output}` 指到纯 ASCII 暂存目录（`%TEMP%\vsoj-build\<随机>`）编译；
+2. 编译成功后把产物**复制回** `temp/`（保持 S5 布局语义：产物就在题目目录的 `temp/` 里）；
+3. 删掉暂存目录；`result.json` 的 `build.staged` 与报告都会说明「走了中转」。
+
+**为什么用声明式能力位而不是在引擎里判语言**：引擎依旧零语言特判（契约 C1），
+差异由工具链自己声明 —— 这与「编译型/解释型」的区别是同一套思路。
+Java/Python 不声明该位，因为它们往中文路径写产物本来就正常（已实测）。
+
 ### 5.7 结果产物
 
 - `test/result.json`：机器/AI 用，含 `sourceHash`（供 D14 判过期）、`summary`、逐用例 `cases`、`runtime`。
@@ -218,9 +240,9 @@ renderResultPage()                                          ← D12/D13
 
 | 阶段 | 内容 | 交付物 | 测试 |
 |---|---|---|---|
-| S6.0 | 工具链模型、内置三套、命令解析与 PATH 推导、JSON 读写 | `src/test/toolchain.ts` | `test/toolchain.test.js` |
-| S6.1 | 严格比较器：LF 归一化、逐字节、首个差异定位（行/列/hex） | `src/test/compare.ts` | `test/compare.test.js` |
-| S6.2 | 引擎：prepare/run/看门狗/产物复用/结果落盘，**纯 Node 可跑** | `src/test/runner.ts`、`src/test/watchdog.ts` | `test/runner.test.js`（真实 g++ 端到端） |
+| S6.0 ✅ | 工具链模型、内置三套、命令解析与 PATH 推导、JSON 读写 | `src/test/toolchain.ts` | `test/toolchain.test.js`（65） |
+| S6.1 ✅ | 严格比较器：LF 归一化、逐字节、首个差异定位（行/列/hex） | `src/test/compare.ts` | `test/compare.test.js`（49） |
+| S6.2 ✅ | 引擎：prepare/run/看门狗/产物复用/结果落盘 + ASCII 中转，**纯 Node 可跑** | `src/test/runner.ts`、`src/test/watchdog.ts` | `test/runner.test.js`（66，真实 g++ 端到端） |
 | S6.3 | 接线层：配置项、store/paths 对接、命令与右键菜单 | `src/test/wiring.ts`、`extension.ts`、`package.json` | `test/test-wiring.test.js` |
 | S6.4 | 结果页 webview（两级、亮色） | `src/webview/testResultWebview.ts` | `test/test-result-page.test.js` |
 | S6.5 | MCP 三个新工具 | `src/mcp/tools.ts`、`server.ts` | `test/mcp-test-tools.test.js` |
@@ -245,6 +267,10 @@ renderResultPage()                                          ← D12/D13
 - **C11** 结果页不引用任何 `--vscode-*` 主题变量（沿用 S5.8 的亮色约定，由 `theme.test.js` 守住）。
 - **C12** 代码改动后旧结果标记为**已过期**而非删除（D14）。
 - **C13** 写文件仅限题目目录内的 `temp/` 与 `test/`；不碰 `samples/`、不碰用户源文件。
+- **C14** 声明了 `asciiSafeOutput` 的工具链，产物路径含非 ASCII 时必须走 ASCII 中转，
+  且**产物最终必须落在 `temp/`**（中转目录要清理，不留垃圾）。
+- **C15** 引擎不得出现任何语言名判断：语言差异只能体现为 `ToolchainDef` 里的声明
+  （`kind` / 命令模板 / 能力位）。
 
 ---
 
@@ -302,3 +328,5 @@ S6 的优势是引擎本身不依赖 vscode，所以可以做**真端到端**：
    可在该工具链的 `env.PATH` 里显式补回。
 2. **内存闸是看门狗不是限额**：1 s 轮询有延迟，一个瞬间暴涨的进程可能在两次轮询之间就吃掉大量内存。
 3. **方案 A 的一级不跨题**：想要「整场比赛哪道题没过」的一览，得等升级到方案 B。
+4. **ASCII 中转依赖 `%TEMP%` 可写且为纯 ASCII 路径**：若用户名本身含中文，
+   回退到 `%SystemDrive%\vsoj-build`；两者都不可用时按原路径编译并如实报错，不静默降级。
