@@ -11,7 +11,7 @@ const { installVscodeStub, makeChecker, cleanup } = require('./helpers/stub');
 installVscodeStub();
 
 const {
-  buildResultHtml, buildResultModel, resultPagePlan, escapeHtml,
+  buildResultHtml, buildResultModel, resultPagePlan, isSetupFailure, escapeHtml,
 } = require('../out/webview/testResultWebview.js');
 const { casePreviews, runtimeText } = require('../out/test/runner.js');
 
@@ -92,6 +92,20 @@ console.log('[1] 弹出与聚焦策略');
   check('onFailure + 有失败 → 打开并抢焦点', resultPagePlan('onFailure', hasFail), { open: true, focus: true });
   check('onFailure + 没跑起来 → 打开（信息量最大的一屏）', resultPagePlan('onFailure', notRun), { open: true, focus: true });
   check('never → 不打开', resultPagePlan('never', hasFail), { open: false, focus: false });
+
+  // 「还没跑起来」不是判定结果，配了 never 也要开 —— 编译器原文才是要给人看的东西
+  const missingTools = makeRun({ ok: false, reason: 'toolchain-missing', cases: [], summary: { total: 0, passed: 0, failed: 0, skipped: 0 } });
+  const noCases = makeRun({ ok: false, reason: 'no-cases', cases: [], summary: { total: 0, passed: 0, failed: 0, skipped: 0 } });
+  const cancelled = makeRun({ ok: false, reason: 'cancelled', cases: [], summary: { total: 0, passed: 0, failed: 0, skipped: 0 } });
+  check('never + 编译失败 → 仍然打开', resultPagePlan('never', notRun), { open: true, focus: true });
+  check('never + 工具链缺失 → 仍然打开', resultPagePlan('never', missingTools), { open: true, focus: true });
+  check('never + 没有用例 → 尊重配置（不算「还没跑起来」）', resultPagePlan('never', noCases), { open: false, focus: false });
+  check('never + 已取消 → 尊重配置', resultPagePlan('never', cancelled), { open: false, focus: false });
+  check('always + 编译失败 → 打开并抢焦点', resultPagePlan('always', notRun), { open: true, focus: true });
+  check('isSetupFailure 只认这两类', [
+    isSetupFailure('build-failed'), isSetupFailure('toolchain-missing'),
+    isSetupFailure('no-cases'), isSetupFailure('cancelled'), isSetupFailure(undefined),
+  ], [true, true, false, false, false]);
 }
 
 // ───────────────────────────── 2. 模型映射 ─────────────────────────────

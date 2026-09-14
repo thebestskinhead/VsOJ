@@ -468,10 +468,33 @@ AI 侧要的是**测试类**工具，而 MCP 只有五个只读与配置类工�
 写成 `forceRebuild: args?.rebuild === true`（永远传一个布尔值）就会把
 `oj.test.reuseBuild` 静默压掉，MCP 与命令面板行为相反（配置说不复用、MCP 却复用了上次产物）。
 
+### 5.14 写盘前的确认，与「没能跑起来」的结果页（S6.10）
+
+**D21 写盘前先确认**：打开文件夹只是「有地方可写」，不等于「同意写」。所以首次要把某道题落进
+文件夹时先问一次（`decideOpenProblem` 的 `needs-confirm`），三个回答：
+
+- **初始化并打开** → 记「本场比赛已同意」，该题懒初始化后分栏；此后这场比赛里点开别的题不再问。
+- **只看题面** → 这一次不写盘：只读渲染题面、不分栏（与 `lazy-init-off` 同一条只读路径）。
+- **本次不再问** → 与侧边栏「暂不」同一份记忆（`InitEntryDismissals`）：本场比赛都不再初始化，
+  「初始化项目」条目也一并收起。重新进入比赛视为重看一次，两个回答都作废。
+
+两个回答都只活在内存里（`InitConfirmations` / `InitEntryDismissals`）：写盘许可不该跨启动继承，
+否则等于默认同意，确认也就没有意义。侧边栏的「初始化这题 / 初始化项目」是用户亲手点的，
+本身即授权，不再多问一遍。
+
+**D22 装配类失败一律打开结果页**：`build-failed` 与 `toolchain-missing` 不看
+`oj.test.resultPage`（契约 C26）—— 它们不是「判定结果」，而是「要人去修的错误」。
+「编译当前题目 / 强制重新编译」两条命令因此也走结果页：`LocalTestRunner.compileResult()`
+把编译期的结果包成完整的 `TestRunResult`（不落盘、不判定），页面沿用「编译器输出」那一屏
+把命令与原文摊开。原先只弹一句「编译器输出见 OJ Debug 频道」，等于把最该看的原文藏进频道里。
+
+**边界（刻意的）**：装配阶段另外三种失败 —— 比赛目录还没建立、源文件还没写、没有工具链认领
+该扩展名 —— 保持弹窗。它们是「还没走到那一步」而不是「跑失败」，弹窗里的指引（该建哪个文件、
+改哪个配置、可用工具链有哪些）本身就是完整答案，开页面不会多给信息。
+
 ---
 
 ## 6. 阶段切分（每阶段一次 commit + 独立可验证测试套件）
-
 | 阶段 | 内容 | 交付物 | 测试 |
 |---|---|---|---|
 | S6.0 ✅ | 工具链模型、内置三套、命令解析与 PATH 推导、JSON 读写 | `src/test/toolchain.ts` | `test/toolchain.test.js`（65） |
@@ -486,6 +509,7 @@ AI 侧要的是**测试类**工具，而 MCP 只有五个只读与配置类工�
 | S6.7 ✅ | **MCP 三工具**：`compile_problem` / `run_local_test` / `get_last_test_result`；`get_current_problem` 补 `local` 段（源文件/样例/题面图片/产物的本地路径） | `src/test/tools.ts`、`src/workspace/resources.ts`、`src/mcp/tools.ts`、`extension.ts` | `test/mcp-test-tools.test.js`（91，真实 `McpToolHandler` + 真 g++ 端到端） |
 | S6.8 ✅ | **工具链配置页**：内置 + 覆盖的实际生效情况一页看完（含命令探测到哪个路径、缺哪个），页面上增删改；保存只写改过的字段、内置项可一键恢复默认；**macOS 内存探测回退**（`ps -o rss=`） | `src/webview/toolchainWebview.ts`、`src/test/watchdog.ts`、`src/extension.ts`、`package.json` | `test/toolchain-page.test.js`（90）、`test/watchdog.test.js`（28） |
 | S6.9 ✅ | **题目快捷操作下拉**：侧边栏「题目列表」标题栏挂下拉（提交代码 / 本地测试 / 编译当前题目 / 强制重新编译）；未打开题目时三处提示统一为「请先打开一道题」 | `package.json`（`submenus` + `menus`）、`src/extension.ts` | `test/menu-contrib.test.js`（20） |
+| S6.10 ✅ | **写盘前确认 + 装配类失败一律开页**（用户追加）：初始化前先问一次（初始化并打开 / 只看题面 / 本场不再问）；「编译当前题目 / 强制重新编译」没过时也打开结果页摊开编译器原文 | `src/workspace/guard.ts`、`src/test/runner.ts`、`src/webview/testResultWebview.ts`、`src/extension.ts` | `test/workspace-guard.test.js`（80）、`test/runner.test.js`（83）、`test/test-result-page.test.js`（67） |
 
 ---
 
@@ -526,6 +550,8 @@ AI 侧要的是**测试类**工具，而 MCP 只有五个只读与配置类工�
   输入/期望/实际用 `casePreviews()`，不得在视图层另写一份读取与截断逻辑。
 - **C26** 结果页的弹出与聚焦由 `oj.test.resultPage` 决定（`always` / `onFailure` / `never`）；
   **全通过时不抢焦点**（页面照常刷新），只有失败或没跑起来才把焦点夺过去。
+  **「没能跑起来」不受这条约束**：`build-failed` 与 `toolchain-missing` 一律打开结果页（D22）——
+  它们是「要人去修的错误」而不是「判定结果」，否则最该看到的编译器原文与缺失命令会被藏起来。
 - **C27** 提交结果页（`oj.statusViewMode = webview`）**不得整页重载**：首屏渲染一次，
   之后待判定行的更新只走消息、只改对应那几格；只有用户点「刷新列表」才允许替换表体。
 - **C28** 待判定 = 站点结果码 `< 4`；轮询走 `status-ajax.php?solution_id=`，
@@ -585,6 +611,7 @@ S6 的优势是引擎本身不依赖 vscode，所以可以做**真端到端**：
 - `src/utils/parser.ts`（S6.6.1：`status-ajax` 行与判题详情正文）
 - `src/api/submit.ts`（S6.6.1：`fetchStatusAjax` / `fetchJudgementDetail`）
 - `src/views/statusPanel.ts`（S6.6.1：webview 档下线，只留 OutputChannel 档）
+- `src/workspace/guard.ts`（S6.10：写盘确认的决策、两个会话记忆与它们的文案）
 - `src/utils/format.ts`（S6.6.1：`escapeHtml` 收敛到这里，全项目唯一一份）
 - `src/extension.ts`（命令注册、右键菜单）｜`package.json`（配置项 / 命令 / 菜单 / tasks 模板）
 - `README.md`、`docs/PROGRESS.md`、`docs/ARCHITECTURE.md`

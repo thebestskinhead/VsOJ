@@ -47,7 +47,8 @@ import { TestToolService } from './test/tools';
 import { collectProblemResources } from './workspace/resources';
 import { registerOjTasks, OjTasksHandle } from './test/tasks';
 import {
-  InitEntryDismissals, NO_FOLDER_TEXT, decideOpenProblem, decideSubmit, makeFacts,
+  INIT_CONFIRM_TEXT, InitConfirmations, InitEntryDismissals, NO_FOLDER_TEXT,
+  decideOpenProblem, decideSubmit, makeFacts,
 } from './workspace/guard';
 
 /** 插件激活入口 */
@@ -253,6 +254,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // 避免同一条规则在三个地方写出三种措辞。
   // ==========================================
   const initDismissals = new InitEntryDismissals();
+  /** 本场比赛已同意写盘（D21）；与上面的「暂不」对称，进比赛时一并清空 */
+  const initConfirmations = new InitConfirmations();
+
+  /**
+   * 进入比赛时重置本会话的两个回答（D19 / D21）。
+   *
+   * 「暂不」与「已同意」都只活在一次查看会话里 —— 重新进入比赛视为重看一次，
+   * 所以初始化条目要再出现、写盘要再问一遍。只清当前 cid：进别的比赛不影响本比赛。
+   */
+  function beginContestSession(cid: string): void {
+    initDismissals.onEnterContest(cid);
+    initConfirmations.onEnterContest(cid);
+  }
 
   /** 该比赛是否已初始化（比赛目录 + `meta.json` 存在） */
   const isContestInitialized = async (cid: string): Promise<boolean> => {
@@ -289,6 +303,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     return false;
   }
 
+  /**
+   * 问一次「要不要把这题写进当前文件夹」（D21）。
+   *
+   * 三个回答：同意 / 这次只看题面 / 本场比赛别再问。**关掉提示框 = 只看题面** ——
+   * 默认落在最保守的那个选项上，没表态就不写盘。
+   */
+  async function askInitConfirm(): Promise<string | undefined> {
+    return vscode.window.showWarningMessage(
+      INIT_CONFIRM_TEXT.message,
+      { detail: INIT_CONFIRM_TEXT.detail, modal: false },
+      INIT_CONFIRM_TEXT.initAction,
+      INIT_CONFIRM_TEXT.viewOnlyAction,
+      INIT_CONFIRM_TEXT.dismissAction,
+    );
+  }
+
   /** 读取当前环境事实（守卫的唯一输入） */
   async function projectFacts(cid: string, pid?: string) {
     const hasFolder = !!vscode.workspace.workspaceFolders?.length;
@@ -303,6 +333,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       lazyInit: isLazyInitEnabled(),
       initEntryVisible: true,
       initEntryDismissed: initDismissals.isDismissed(cid),
+      initConfirmed: initConfirmations.isConfirmed(cid),
       contestInitialized: hasFolder ? await isContestInitialized(cid) : false,
       problemOnDisk,
     });
@@ -755,8 +786,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('oj.enterContest', async (cid: string) => {
       try {
         await state.setCurrentCid(cid);
-        // 「暂不」只管本次会话：重新进入比赛时条目再出现一次（D19）
-        initDismissals.onEnterContest(cid);
+        // 「暂不」与「已同意」只管本次会话：重新进入比赛时都重来一次（D19 / D21）
+        beginContestSession(cid);
         problemTreeProvider.refresh();
         vscode.window.showInformationMessage(`[OJ] 已进入比赛 ${cid}`);
       } catch (e: any) {
@@ -798,6 +829,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         // 进入比赛
         await state.setCurrentCid(cid);
         await state.setCurrentPid(pid);
+        beginContestSession(cid);
         problemTreeProvider.refresh();
         vscode.window.showInformationMessage(`[OJ] 已进入比赛 ${cid}，定位题目 ${pid}`);
 
@@ -851,7 +883,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         await ensureFolderForProject();
         return;
       }
-      if (!decision.lazyInit) { return; }
+      // 这条命令是用户亲手点的（侧边栏「初始化这题」/ MCP），本身即授权，不再问第二遍（D21）
+      if (!decision.lazyInit && decision.reason !== 'needs-confirm') { return; }
+      initConfirmations.confirm(cid);
 
       const r = await buildInitializer(cid).ensureProblem({ pid });
       if (!r.ok) {
@@ -871,6 +905,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return;
       }
       if (!(await ensureFolderForProject())) { return; }
+      // 用户主动点了「初始化项目」（或跑了这条命令）→ 本场比赛视为已同意，后续点题不再问（D21）
+      initConfirmations.confirm(cid);
 
       // 题目列表缓存优先（离线且无缓存时给出可读失败，而不是空跑）
       let briefs: ProblemBrief[] = [];
@@ -933,11 +969,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }
 
         const facts = await projectFacts(actualCid, pid);
-        const decision = decideOpenProblem(facts);
+        let decision = decideOpenProblem(facts);
 
         // C1：无文件夹 → 提醒（带按钮）后仍以只读方式展示题面
         if (decision.promptOpenFolder) {
           await ensureFolderForProject();
+        }
+
+        // D21：写盘前先问一次；同意后本场比赛的后续题目不再问
+        if (decision.confirmInit) {
+          const pick = await askInitConfirm();
+          if (pick === INIT_CONFIRM_TEXT.initAction) {
+            initConfirmations.confirm(actualCid);
+            decision = decideOpenProblem({ ...facts, initConfirmed: true });
+          } else if (pick === INIT_CONFIRM_TEXT.dismissAction) {
+            // 「不再问」与侧边栏的「暂不」同一份记忆：本场比赛不再初始化，条目也收起（D19）
+            initDismissals.dismiss(actualCid);
+            problemTreeProvider.refresh();
+          }
         }
 
         // C3：懒初始化该题（失败不阻断看题，只是没有本地文件）
@@ -1366,14 +1415,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     return wsRoot ? path.relative(wsRoot, p) || p : p;
   }
 
-  /** 编译（不判定、不跑样例）；失败时把编译器原文送进 Debug 频道并弹出来 */
+  /** 编译（不判定、不跑样例）；没过时把编译器原文摊在结果页上 */
   async function compileOnly(item: unknown, forceRebuild: boolean | undefined): Promise<void> {
     await withTestDeps(item as { problem?: ProblemBrief }, '[OJ] 正在编译…', forceRebuild, async (deps) => {
-      const r = await new LocalTestRunner(deps).prepareOnly();
+      const r = await new LocalTestRunner(deps).compileResult();
       if (!r.ok) {
-        logInfo(`[test] 编译失败：\n${r.message}`);
-        showDebugChannel();
-        void vscode.window.showErrorMessage('[OJ] 编译失败：编译器输出见「OJ Debug」频道。');
+        const why = r.reason === 'toolchain-missing' ? '工具链不可用' : '编译失败';
+        logInfo(`[test] ${why}：\n${r.build.output}`);
+        // 「还没跑起来」一律开页（plan 内部不看 oj.test.resultPage）—— 原文都在那一屏上
+        await openResultPage(r, deps);
+        void vscode.window.showErrorMessage(`[OJ] ${why}：原因见已打开的结果页。`);
         return;
       }
       logInfo(`[test] 编译成功：${r.build.command}${r.build.reused ? '（复用上次产物）' : ''}`);
@@ -1403,9 +1454,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!r.ok) {
         // 结果页照常弹：这一屏正好把「缺什么命令 / 编译器怎么报错」摊开
         await openResultPage(r, deps);
-        showDebugChannel();
         void vscode.window.showErrorMessage(
-          `[OJ] ${r.build.ok ? summary : '测试没能跑起来'}` + (relReport ? `　报告：${relReport}` : ''),
+          `[OJ] ${r.build.ok ? summary : '测试没能跑起来：原因见已打开的结果页'}`
+          + (relReport ? `　报告：${relReport}` : ''),
         );
         return;
       }

@@ -87,14 +87,31 @@ export interface ResultPageModel {
 export interface ResultPagePlan { open: boolean; focus: boolean }
 
 /**
+ * 这一条失败是不是「还没跑起来」（而不是「跑完了但答案不对」）。
+ *
+ * 编译器报错与命令找不到属于前者：它们没有判定结果可看，只有原因可看，
+ * 而原因就在页面那一屏里（编译器原文 / 缺哪个命令 / 找过哪些位置）。
+ */
+export function isSetupFailure(reason: RunFailureReason | undefined): boolean {
+  return reason === 'build-failed' || reason === 'toolchain-missing';
+}
+
+/**
  * 是否弹出结果页、以及是否把焦点抢过来。
  *
- * **全通过时不抢焦点**（用户还在敲代码，页面自己刷新就行）；有失败或没跑起来才夺焦点 ——
- * 那时用户一定想知道为什么。
+ * - **全通过时不抢焦点**（用户还在敲代码，页面自己刷新就行）；有失败或没跑起来才夺焦点 ——
+ *   那时用户一定想知道为什么。
+ * - **「还没跑起来」一律开页，不看 `oj.test.resultPage`**（决策 D13 的补充）：
+ *   配 `never` 表达的是「判定结果别烦我」，而编译失败 / 命令找不到是要人去动手修的错误，
+ *   只留一句弹窗等于把最该看到的原文藏起来。
  */
-export function resultPagePlan(mode: TestResultPageMode, r: Pick<TestRunResult, 'ok' | 'summary'>): ResultPagePlan {
+export function resultPagePlan(
+  mode: TestResultPageMode,
+  r: Pick<TestRunResult, 'ok' | 'summary'> & { reason?: RunFailureReason },
+): ResultPagePlan {
   const passedAll = r.ok && r.summary.failed === 0;
-  const open = mode === 'always' ? true : mode === 'onFailure' ? !passedAll : false;
+  const open = isSetupFailure(r.reason)
+    || (mode === 'always' ? true : mode === 'onFailure' ? !passedAll : false);
   // 不打开时 focus 无意义，一律 false —— 免得调用方还要判一次 open
   return open ? { open: true, focus: !passedAll } : { open: false, focus: false };
 }

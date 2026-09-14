@@ -299,6 +299,36 @@ if (HAS_GPP) {
   });
   ok('对照：产物用绝对路径（含中文）时 ld 报错退出', directFail.exitCode !== 0);
   ok('错误信息确实是乱码路径', /No such file or directory/.test(fs.readFileSync(path.join(cnTemp, 'direct.log2'), 'utf8')));
+
+  console.log('\n[13] 只编译：结果页要的形状（不落盘、不判定）');
+  reset();
+  writeSource('#include <bits/stdc++.h>\nint main(){ long long a,b; if(!(std::cin>>a>>b)) return 0; std::cout<<a+b<<"\\n"; }\n');
+  writeSample(1, '1 2\n', '3\n');
+  {
+    const rC = await makeRunner().compileResult();
+    check('编译成功 → 整体 ok', rC.ok, true);
+    check('编译成功 → 无失败原因', rC.reason, undefined);
+    check('不产出用例结论（只编译，不跑）', rC.cases, []);
+    check('不带样例统计', rC.summary.total, 0);
+    check('不落盘 result.json', fs.existsSync(resultFile), false);
+    check('不落盘 report.md', fs.existsSync(reportFile), false);
+    check('源文件哈希可用于过期判定', rC.source.hash.length, 40);
+  }
+  {
+    // 只编译不需要样例：这一段故意不写 samples/
+    reset();
+    writeSource('#include <bits/stdc++.h>\nint main(){ this is not c++ }\n');
+    const rC = await makeRunner().compileResult();
+    check('编译失败 → 整体 ok=false', rC.ok, false);
+    check('原因标记为 build-failed', rC.reason, 'build-failed');
+    ok('编译器原文原样回传（页面就是要显示它）', /error/.test(rC.build.output));
+    ok('带上实际执行的编译命令（让人核对自己配的工具链）', rC.build.command.length > 0);
+  }
+  {
+    const rC = await makeRunner({ deps: { missing: ['gpp'], tried: ['C:\\bin\\g++.exe'] } }).compileResult();
+    check('工具链缺失 → 原因标记为 toolchain-missing', rC.reason, 'toolchain-missing');
+    ok('沿用同一段可操作指引', /绝对路径/.test(rC.build.output));
+  }
 } else {
   console.log(`\n  skip  未找到本机 g++（${GPP}），[2]–[11] 组跳过。`);
   console.log('       这组测试刻意不 mock：没有真实工具链就说明「测不了」，而不是伪装成通过。');

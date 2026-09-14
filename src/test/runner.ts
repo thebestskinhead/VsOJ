@@ -391,6 +391,53 @@ export class LocalTestRunner {
     };
   }
 
+  /**
+   * 只编译、不跑用例，但返回**完整的结果形状**而不是 argv。
+   *
+   * 「编译当前题目 / 强制重新编译」用它：编译没过时结果页要摊开编译器原文，
+   * 而页面吃的是 `TestRunResult`。与 `prepareOnly` 的分工是「给谁用」——
+   * 那个给 Task（要 argv 接终端），这个给结果页（要页面形状）。
+   *
+   * 与 `run()` 的两点差别：
+   * - **不落盘**：只编译不判定，`result.json` / `report.md` 不生成（页面上的路径为空）。
+   * - **不因为有样例缺失而失败**：编译本来就不需要样例。
+   */
+  async compileResult(): Promise<TestRunResult> {
+    const t0 = this.now;
+    const { toolchain, meta } = this.deps;
+    const r: TestRunResult = {
+      version: 1,
+      cid: meta.cid,
+      pid: meta.pid,
+      title: meta.title,
+      toolchain: { id: toolchain.id, label: toolchain.label, kind: toolchain.kind },
+      source: { file: this.deps.sourceFile, hash: sha1(this.readSourceText()) },
+      startedAt: new Date(t0).toISOString(),
+      durationMs: 0,
+      ok: false,
+      build: { ok: false, reused: false, durationMs: 0, command: '', runnable: '', output: '' },
+      summary: { total: 0, passed: 0, failed: 0, skipped: 0 },
+      cases: [],
+      skipped: [],
+      resultFile: '',
+      reportFile: '',
+    };
+
+    // 工具链命令就找不到 → 与 `run()` 同一判定与同一段原文（口径只有一份）
+    if ((this.deps.missing ?? []).length) {
+      r.reason = 'toolchain-missing';
+      r.build.output = this.missingMessage();
+      r.durationMs = this.now - t0;
+      return r;
+    }
+
+    r.build = await this.prepare(this.readSourceText());
+    r.ok = r.build.ok;
+    if (!r.build.ok) { r.reason = 'build-failed'; }
+    r.durationMs = this.now - t0;
+    return r;
+  }
+
   private readSourceText(): string {
     try { return fs.readFileSync(this.deps.sourceFile, 'utf8'); } catch { return ''; }
   }

@@ -56,15 +56,28 @@ const { makeFacts } = G;
     check('原因', G.decideInitEntry(f).reason, 'project-disabled');
   }
 
-  // ---------- 3. 懒初始化开 → 落盘 + 分栏 ----------
-  console.log('\n[3] 有文件夹 + 未初始化 + 懒初始化开 → 懒初始化后分栏（C3）');
+  // ---------- 3. 懒初始化开 → 先问一次，同意后才落盘 + 分栏 ----------
+  console.log('\n[3] 有文件夹 + 未初始化 + 懒初始化开 → 先征求同意（D21）');
   {
     const f = makeFacts({ hasFolder: true, contestInitialized: false, problemOnDisk: false, lazyInit: true });
     const d = G.decideOpenProblem(f);
-    check('写盘', d.lazyInit, true);
-    check('分栏', d.split, true);
-    check('不使用无缓存路径', d.noCache, false);
-    check('不弹确认框式提醒', d.promptOpenFolder, false);
+    check('没表态就不写盘', d.lazyInit, false);
+    check('没表态就不分栏', d.split, false);
+    check('要求先确认', d.confirmInit, true);
+    check('原因', d.reason, 'needs-confirm');
+    check('不弹「请先打开文件夹」提醒', d.promptOpenFolder, false);
+    check('未表态仍可使用 .vsoj 缓存', d.noCache, false);
+  }
+  {
+    // 打开文件夹只是「有地方可写」，不等于「同意写」—— 所以确认与否只差这一个事实
+    const f = makeFacts({
+      hasFolder: true, contestInitialized: false, problemOnDisk: false,
+      lazyInit: true, initConfirmed: true,
+    });
+    const d = G.decideOpenProblem(f);
+    check('同意 → 写盘', d.lazyInit, true);
+    check('同意 → 分栏', d.split, true);
+    check('同意 → 不再问', d.confirmInit, false);
     check('原因', d.reason, 'needs-lazy-init');
   }
 
@@ -133,7 +146,7 @@ const { makeFacts } = G;
     check('暂不原因', G.decideInitEntry(makeFacts({ ...base, initEntryDismissed: true })).reason, 'dismissed-this-session');
   }
 
-  // ---------- 8. 「暂不」只作用于本次会话（D19） ----------
+  // ---------- 8. 两个回答都只作用于本次会话（D19 / D21） ----------
   console.log('\n[8] 暂不的语义（D19：本次会话隐藏 / 重进比赛再现）');
   {
     const d = new G.InitEntryDismissals();
@@ -154,6 +167,30 @@ const { makeFacts } = G;
     d.clear();
     check('clear 后重置', d.isDismissed('3772'), false);
   }
+  {
+    console.log('  —— 已同意初始化（D21：与「暂不」对称，同样是本次会话的记忆）');
+    const c = new G.InitConfirmations();
+    check('初始未同意', c.isConfirmed('3772'), false);
+
+    c.confirm('3772');
+    check('同意后记为已确认', c.isConfirmed('3772'), true);
+    check('换个比赛不受影响', c.isConfirmed('3775'), false);
+
+    c.onEnterContest('3772');
+    check('重新进入比赛 → 要再问一次', c.isConfirmed('3772'), false);
+
+    c.confirm('3772');
+    c.onEnterContest('3775');
+    check('进入别的比赛不清本比赛的同意', c.isConfirmed('3772'), true);
+
+    c.clear();
+    check('clear 后重置', c.isConfirmed('3772'), false);
+    ok('确认文案：三按钮齐全',
+      !!G.INIT_CONFIRM_TEXT.initAction && !!G.INIT_CONFIRM_TEXT.viewOnlyAction
+      && !!G.INIT_CONFIRM_TEXT.dismissAction);
+    ok('确认文案：说明会写入什么', G.INIT_CONFIRM_TEXT.detail.includes('写'));
+    ok('确认文案：说明不写会怎样', G.INIT_CONFIRM_TEXT.detail.includes('只看题面'));
+  }
 
   // ---------- 9. makeFacts 默认取最保守值 ----------
   console.log('\n[9] makeFacts 缺省值');
@@ -164,6 +201,7 @@ const { makeFacts } = G;
     check('默认懒初始化开', f.lazyInit, true);
     check('默认条目允许', f.initEntryVisible, true);
     check('默认未暂不', f.initEntryDismissed, false);
+    check('默认未确认写盘', f.initConfirmed, false);
     check('默认未初始化', f.contestInitialized, false);
     check('默认题未落地', f.problemOnDisk, false);
     check('默认无缓存可用', G.decideOpenProblem(f).noCache, true);
@@ -180,12 +218,12 @@ const { makeFacts } = G;
             const d = G.decideOpenProblem(makeFacts({
               hasFolder: false, projectEnabled, lazyInit, problemOnDisk, contestInitialized,
             }));
-            if (d.split || d.lazyInit || !d.noCache || !d.promptOpenFolder) { violations++; }
+            if (d.split || d.lazyInit || d.confirmInit || !d.noCache || !d.promptOpenFolder) { violations++; }
           }
         }
       }
     }
-    check('16 种组合全部只读且不写盘（违反数）', violations, 0);
+    check('16 种组合全部只读、不写盘、也不问初始化（违反数）', violations, 0);
 
     let submitViolations = 0;
     for (const projectEnabled of [true, false]) {
