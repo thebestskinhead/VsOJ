@@ -551,6 +551,7 @@
     "test:config-manual": "npm run compile && node test/config-manual.test.js",
     "test:config-writer": "npm run compile && node test/config-writer.test.js",
     "test:config-tools": "npm run compile && node test/config-tools.test.js",
+    "test:mcp-test-tools": "npm run compile && node test/mcp-test-tools.test.js",
     "docs:config": "npm run compile && node scripts/gen-config-docs.js"
   },
   "devDependencies": {

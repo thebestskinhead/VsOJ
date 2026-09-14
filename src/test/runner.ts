@@ -665,8 +665,14 @@ function safeCompare(expectedFile: string, actualFile: string) {
   }
 }
 
-/** 生成 report.md */
-export function buildReport(r: TestRunResult, deps: RunnerDeps): string {
+/**
+ * 生成 report.md。
+ *
+ * `deps` 只需要「用例产物怎么读」（`tempDir` + `cases`）——不必交出整份 `RunnerDeps`。
+ * 这条放宽不是为了好看：MCP 的「读最近结果」要**在没有引擎实例的情况下**重渲染报告，
+ * 它手上有的是题目目录与样例路径，凑不出（也不该凑）工具链与命令解析那几项。
+ */
+export function buildReport(r: TestRunResult, deps: Pick<RunnerDeps, 'tempDir' | 'cases'>): string {
   const L: string[] = [];
   L.push(`# 本地测试报告 · ${r.title || `${r.cid}-${r.pid}`}`);
   L.push('');
@@ -828,7 +834,7 @@ function readPreview(file: string | undefined, maxBytes: number): OutputPreview 
   return { text: p.text, truncated: p.truncated, missing: false };
 }
 
-function expectedActualPreview(deps: RunnerDeps, c: CaseResult): string[] {
+function expectedActualPreview(deps: Pick<RunnerDeps, 'tempDir' | 'cases'>, c: CaseResult): string[] {
   const out: string[] = [];
   const pv = casePreviews(deps, c, 1200);
   if (!pv.expected.missing) {

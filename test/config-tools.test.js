@@ -81,7 +81,8 @@ console.log('\n[1] 工具注册');
   const names = handler.listTools().map((t) => t.name);
   ok('get_config_manual 已注册', names.includes('get_config_manual'));
   ok('init_config 已注册', names.includes('init_config'));
-  check('工具总数', names.length, 5);
+  // 5 个只读/配置类 + S6.7 的 3 个测试工具（compile_problem / run_local_test / get_last_test_result）
+  check('工具总数', names.length, 8);
 
   for (const name of ['get_config_manual', 'init_config']) {
     const t = handler.listTools().find((x) => x.name === name);

@@ -16,7 +16,10 @@
 3. **工具链配置**：工作区一份 `toolchains.json`（内置三套默认 + 用户自定义），外加一个可视化编辑页。
 4. **三个触发入口**：命令面板/右键菜单、VS Code Task、MCP 工具。
 5. **结果页**：内置 webview，两级结构（一级状态列表 / 二级单用例明细），固定亮色主题。
-6. **MCP 扩展**：`get_problem_assets`、`get_problem_samples`、`run_local_test`。
+6. **MCP 扩展（S6.7，用户定形）**：只做**三个**工具 —— `compile_problem`（只编译）、
+   `run_local_test`（编译 + 跑样例 + 判定 + 落盘）、`get_last_test_result`（读最近结果、不重跑）。
+   **不为题目图片/样例另开工具**：它们的本地绝对路径并进已有的 `get_current_problem` 返回（`local` 段），
+   要图自己去读那个路径（D11）。MCP 通道**不弹结果页**，只回文本。
 7. **提交结果页重写**（S6.6.1，用户中途追加）：`oj.statusViewMode = webview` 这一档不再原样嵌入
    站点页面，改成插件自绘的结果页 —— 样式统一、固定亮色、待判定的提交**就地轮询刷新**（不重载页面）。
 
@@ -57,7 +60,7 @@ S6 的目标就是补上这一步：**一键把本地这份源码跑一遍样例
 | D8 | **宽松看门狗**兜死循环与内存泄漏 | 任一闸门触发 → 直接 kill **整个进程树** |
 | D9 | 用例范围：**samples/ 全部成对**，跳过「半对」 | 半对 = 只有 `N.in` 没有 `N.out`；跳过并在报告里点名说明 |
 | D10 | 触发入口：**命令面板+右键菜单 / VS Code Task / MCP 工具** | 不做保存即测 |
-| D11 | MCP 返回题目图片：**只给本地路径** | 不内联 base64 |
+| D11 | MCP 返回题目图片：**只给本地路径** | 不内联 base64；且**不另开读图工具** —— 路径并进 `get_current_problem` 的 `local` 段 |
 | D12 | 结果页 = **内置 webview，两级结构** | 一级：本次测试的用例状态列表；二级：该用例的期望/实际/diff 明细 |
 | D13 | 结果页**每次测试都自动弹出/刷新并聚焦** | 全通过也展示；另有开关可改 |
 | D14 | 代码改动后旧结果**标为已过期**（不删除） | 结果页与列表都标「代码已改动，结果可能已过期」 |
@@ -420,6 +423,48 @@ fresh_result(): GET status-ajax.php?solution_id=<sid>
 **少转义一个 `"`**。现在统一到 `utils/format.ts`，另外两处直接引用；
 `test/status-webview.test.js` 里加了断言钉住「题目页标题里的引号必须被转义」。
 
+### 5.13 MCP 三工具（S6.7）—— 为什么是这三个，以及三条约束
+
+S6 的动机里写着「让 AI 也能跑这条路，形成『AI 改代码 → 本地验证 → 再改』的闭环」
+（§1）。但 S6.0–S6.6.2 交付的全是**给人用的**入口（命令面板 / 右键 / Task / 结果页），
+MCP 那一侧当时只有五个只读与配置类工具（`get_contest_problems` / `get_current_problem` /
+`get_contest_list` / `get_config_manual` / `init_config`）—— 闭环缺的正是最后一环。
+
+**工具粒度由用户拍板**：只做三个，且**不为图片/样例另开工具**。
+
+| 工具 | 干什么 | 为什么不合并 |
+|---|---|---|
+| `compile_problem` | 只编译，返回编译器原文 / 命令 / 产物路径 | AI 常只想确认「编译过不过」。合并进测试的话，每次探一次编译都要付「跑完所有样例」的时间 |
+| `run_local_test` | 编译 + 跑样例 + 判定 + 落盘 `result.json`/`report.md` | 主入口 |
+| `get_last_test_result` | 读上次结果 + 判过期，**不重跑** | 「刚才的结论是什么」「用户说改了代码，结果还作数吗」是高频追问，重跑一次要几秒且会污染产物 |
+
+图片与样例**没有独立工具**：它们是**静态资源**，AI 知道路径就能自己读；
+再包一层「读图片」的工具，只是把「读文件」这件事重新发明一遍，
+还要在 MCP 里搬二进制。所以路径并进 `get_current_problem` 的 `local` 段
+（源文件 / 样例 / 题面图片 / `temp` / 结果与报告），一次问清楚（D11）。
+
+**三条约束（已进契约）**
+
+1. **C31 同一条引擎路径**：装配走 `buildTestDeps`、执行走 `LocalTestRunner`、
+   描述走 `buildReport`。绝不出现「AI 跑出来通过、用户点一下不通过」这种最坏情况。
+   正文直接用 `buildReport()` 的输出，`test/mcp-test-tools.test.js` 里有断言钉住
+   「返回文本逐字包含 `report.md`」。
+2. **C32 不弹任何界面 + 读不重跑**：MCP 面向 AI，结果以文本返回；
+   用户想看图，命令面板里有。（`result.json` / `report.md` 照常落盘。）
+   `get_last_test_result` 只读盘 —— 测试里比对结果文件的 `mtime` 未变来证明这一点。
+3. **C33 路径而不是数据**：`local` 段只给绝对路径；比赛目录没建立时给
+   `available:false` + 「去侧边栏进入这场比赛」，而**不是**让取题目整个失败 ——
+   题面本身在没建目录时仍然有价值。
+
+**为「读最近结果」放宽的一处签名**：`buildReport(r, deps)` 原先要整份 `RunnerDeps`，
+实际只用到 `tempDir` + `cases` 两项，于是放宽为 `Pick<RunnerDeps, 'tempDir' | 'cases'>`。
+理由不是为了好看：MCP 侧要**在没有引擎实例的情况下**重渲染报告（报告被删时），
+它手上只有题目目录与样例路径，凑不出（也不该凑）工具链与命令解析那几项。
+
+**一处刻意的重复**：`resolveTarget()` 与 `get_contest_problems` 的「不传就用当前」是同一套逻辑，
+但 MCP 侧多一条「当前打开的是题面（`problemWebviewRef.current`）优先于 `globalState`」——
+它更贴近「他正在看哪道题」。这份判断只存在于读侧，不涉及写入，暂不强行合并。
+
 ---
 
 ## 6. 阶段切分（每阶段一次 commit + 独立可验证测试套件）
@@ -435,7 +480,7 @@ fresh_result(): GET status-ajax.php?solution_id=<sid>
 | S6.5 ✅ | **配置说明书 + AI 初始化工具**（用户追加）：`get_config_manual` / `init_config`，说明书生成与漂移断言 | `src/config/manual.ts`、`writer.ts`、`tools.ts`、`wiring.ts`、`scripts/gen-config-docs.js` | `test/config-manual.test.js`（44）、`test/config-writer.test.js`（85）、`test/config-tools.test.js`（54） |
 | S6.6 ✅ | 结果页 webview：两级明细、过期标记、零脚本、全通过不抢焦点 | `src/webview/testResultWebview.ts`（+ `runner.ts` 抽出 `casePreviews` / `runtimeText` 供报告与页面共用） | `test/test-result-page.test.js`（61） |
 | S6.6.1 ✅ | **提交结果页重写**（用户追加）：统一亮色样式 + 待判定行就地轮询（对齐站点 `auto_refresh.js`）、「结果」列可点开判题详情；旧实现（原样塞站点 HTML + 链接代理脚本）下线 | `src/webview/statusWebview.ts`、`src/api/submit.ts`、`src/utils/parser.ts`、`src/views/statusPanel.ts` | `test/status-webview.test.js`（136） |
-| S6.7 | MCP 三工具：编译 / 本地测试 / 读最近结果 + 读题目图片 | `src/mcp/tools.ts`、`server.ts` | `test/mcp-test-tools.test.js` |
+| S6.7 ✅ | **MCP 三工具**：`compile_problem` / `run_local_test` / `get_last_test_result`；`get_current_problem` 补 `local` 段（源文件/样例/题面图片/产物的本地路径） | `src/test/tools.ts`、`src/workspace/resources.ts`、`src/mcp/tools.ts`、`extension.ts` | `test/mcp-test-tools.test.js`（87，真实 `McpToolHandler` + 真 g++ 端到端） |
 | S6.8 | 工具链可视化编辑页 + macOS 内存探测回退 + 文档收口 | `src/webview/toolchainWebview.ts` 等 | `test/toolchain-page.test.js` |
 
 ---
@@ -487,6 +532,14 @@ fresh_result(): GET status-ajax.php?solution_id=<sid>
   `escapeHtml`**（唯一实现在 `utils/format.ts`）；走 `setAttribute` 的（如行悬停提示）不做转义。
 - **C30** 提交结果页与题目页 / 本地测试结果页共用同一套亮色约定
   （无 `--vscode-*`、白底深字、绿红琥珀灰、无 emoji、无蓝紫）。
+- **C31** MCP 测试工具**必须与命令面板走同一条引擎路径**
+  （`buildTestDeps` → `LocalTestRunner` → `buildReport`）：不得自己 spawn 编译器，
+  也不得另写一份「给 AI 看的简版报告」——两套说法迟早会在措辞或字段上分叉。
+- **C32** MCP 测试工具**不得弹出任何界面**（结果页 / 通知 / 进度条）；
+  `get_last_test_result` **不得触发编译或执行**：只读 `result.json` / `report.md` + 比对源码哈希判过期。
+- **C33** 题目图片与样例**只以本地绝对路径暴露**（D11），且不新增「读图片 / 读样例」工具；
+  路径并进 `get_current_problem` 的 `local` 段。比赛目录尚未建立时给 `local.available=false` +
+  怎么建，而**不是**让整次取题目失败。
 
 ---
 
@@ -513,6 +566,7 @@ S6 的优势是引擎本身不依赖 vscode，所以可以做**真端到端**：
 - `src/test/wiring.ts`（S6.3）、`src/test/taskTemplate.ts`（S6.6 未做，任务模板直接写在 `src/test/tasks.ts` 里）
 - `src/webview/testResultWebview.ts`（S6.6）、`src/webview/toolchainWebview.ts`（S6.8）
 - `src/webview/statusWebview.ts`（S6.6.1，替换 `statusPanel` 里原样嵌站点页面的 webview 档）
+- `src/test/tools.ts`（S6.7，MCP 三工具的服务层，零 vscode）、`src/workspace/resources.ts`（S6.7，题目本地路径清单）
 - `src/utils/testConfig.ts`（**未拆**：`config.ts` 停在 190 行，先不为了「避免膨胀」而拆）
 - `test/{toolchain,compare,runner,test-wiring,test-result-page,status-webview,mcp-test-tools,task-template,toolchain-page}.test.js`
 

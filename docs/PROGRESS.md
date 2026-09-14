@@ -21,6 +21,7 @@
 | S6.5.1 | 2026-09-14 | **修**：题目列表标题栏按钮重启后全消失（`oj.inContest` 派生 + 启动恢复） | `npm test` 22 套件；`test:context-sync` 13 项 |
 | S6.6 | 2026-09-14 | **结果页 webview**：两级明细（列表 → 期望/实际/差异）、过期标记、零脚本、全通过不抢焦点 | `npm test` 23 套件；`test:result-page` 61 项 |
 | S6.6.1 | 2026-09-14 | **提交结果页重写**：统一亮色样式 + 待判定行**就地轮询**（对齐站点 `auto_refresh.js`）、可点开判题详情；旧「原样嵌站点页面」下线 | `npm test` 24 套件；`test:status-webview` 136 项 |
+| S6.7 | 2026-09-14 | **MCP 三工具**：`compile_problem` / `run_local_test` / `get_last_test_result`；`get_current_problem` 补 `local` 段（源文件/样例/题面图片/产物的本地绝对路径）。AI 侧「改代码 → 本地验证 → 再改」闭环补上最后一环 | `npm test` 25 套件；`test:mcp-test-tools` 87 项（真实 `McpToolHandler` + 真 g++ 端到端） |
 
 ---
 
@@ -417,6 +418,51 @@ context key 回到未定义 → 三个按钮的 `when` 全部不成立 → 标�
 
 ---
 
+## S6.7 — MCP 三工具（2026-09-14）
+
+**要补的是什么**：S6 的动机是让 AI 也能走「改代码 → 本地验证 → 再改」这条闭环，但
+S6.0–S6.6.2 交付的全是**给人用的**入口（命令面板 / 右键 / Task / 结果页）。
+MCP 那侧当时只有五个只读与配置类工具，缺的正是最后一环。
+
+**工具粒度由用户拍板**（三条都问过，没自己定）：
+
+1. **只做三个工具**：`compile_problem`（只编译）/ `run_local_test`（编译+跑样例+判定+落盘）/
+   `get_last_test_result`（读上次结果，不重跑）。
+2. **不为图片/样例另开工具** —— 它们是静态资源，知道路径就能读；路径并进
+   `get_current_problem` 的 `local` 段（源文件 / 样例 / 题面图片 / `temp` / 结果与报告）。
+3. **MCP 通道不弹结果页**，纯文本返回（`result.json` / `report.md` 照常落盘）。
+
+**做了什么**
+
+- 新增 `src/test/tools.ts` —— `TestToolService`，零 vscode 依赖、全部靠注入
+  （与 `config/tools.ts` 同一分工）。三条刻意的口径写进了文件头：
+  **复用命令面板的同一条路径**、**不弹界面**、**读最近结果不重跑**。
+- 新增 `src/workspace/resources.ts` —— `collectProblemResources()`：把「这道题在本机都有什么、
+  分别在哪个绝对路径」一次问清楚（源文件、样例含**半对**、题面图片、`temp`、结果/报告）。
+  路径拼装归 `cache/paths`、样例配对归 `test/runner`，这里只做清单。
+- `src/mcp/tools.ts`：注册三个工具（描述写清「什么时候用哪个」）；`callTool` 加三个分支；
+  `get_current_problem` 返回值加 `local` 段（比赛目录未建立时 `available:false` + 怎么建，
+  **不让取题目整个失败**）。构造函数新增 `testService` 与 `problemResources` 两个可选依赖。
+- `src/extension.ts`：接线 `TestToolService`（`buildDeps` 包 `buildTestDeps`、
+  `currentTarget` 取 `problemWebviewRef.current` 优先于 `globalState`、`readSource` 复用
+  `readSourceText` 以保证「改了还没保存也算代码已改动」）。
+- `src/test/runner.ts`：`buildReport(r, deps)` 的 `deps` 从整份 `RunnerDeps` 放宽为
+  `Pick<RunnerDeps, 'tempDir' | 'cases'>`（它本来只用这两项）—— 这样「报告被删了用
+  `result.json` 重渲染」不必伪造一份 `RunnerDeps`。
+- `package.json`：新增 `npm run test:mcp-test-tools`。
+
+**验证**：`test/mcp-test-tools.test.js` 87 项 —— 工具注册表（含「没有读图片的独立工具」的
+反向断言）、`get_current_problem` 的 `local` 段（含半对样例、图片路径、无 base64）、
+`compile_problem` 三种结局（工具链缺失 / 编译失败带编译器原文 / 成功给产物与运行命令）、
+`run_local_test`（全通过、差一字节的定位、没有成对样例、跳过用例点名、**返回文本逐字包含
+`report.md`**）、`get_last_test_result`（没跑过 / 读得到 / **结果文件 `mtime` 未变证明没重跑** /
+改源码后打过期标记但仍给旧结论 / 报告被删则重渲染 / `format:json`）、目标解析（不传参数用当前、
+都没有给可操作文案）、口径静态检查（不弹界面、复用 `buildReport`、不自己 spawn 编译器）。
+用**真实的 `McpToolHandler`** + 真 g++ 编译真源码跑真样例；找不到 g++ 时降级为 skip 并说明。
+`npm test` → **25 套件全通过**（`test/config-tools` 的「工具总数」断言从 5 改到 8）。
+
+---
+
 ## 比赛目录初始化：现状与缺口（S5 开工前评审 · 已全部闭环）
 
 > 本节是 S5 开工前的评审记录，**保留作为决策依据**。
@@ -477,16 +523,16 @@ context key 回到未定义 → 三个按钮的 `when` 全部不成立 → 标�
   （**20 条决策全部经用户拍板**、S5.0–S5.7 阶段切分、15 条行为契约）。
   核心形态：**懒初始化单题（默认）+ 侧边栏条目全量预取**，共用同一个 `ensureProblem()`；
   比赛目录建在 **workspace 可见根**（`<cid>-<标题>/`），题目目录用 `<字母>-<标题>/`。
-- 🔄 **S6 本地测试引擎 + MCP 扩展** —— 进行中。已完成 S6.0–S6.5：
+- 🔄 **S6 本地测试引擎 + MCP 扩展** —— 进行中。已完成 S6.0–S6.7：
   - ✅ 引擎与工具链：`prepare` / `run` / `compare` 三步 + 三闸看门狗（`src/test/`）
   - ✅ 接线层 + 自定义任务（`oj` 类型）：编译 / 本地测试 / 强制重编译 / **跑一下**
   - ✅ 配置说明书与 AI 初始化：MCP `get_config_manual` / `init_config` + `docs/CONFIG.md`
   - ✅ 结果页 webview（S6.6，两级明细 / 过期标记 / 零脚本）与**提交结果页重写**（S6.6.1，
     统一亮色 + 待判定行就地轮询 / 可点开判题详情）
-  - ⏳ 待做：**S6.7 MCP 三工具**（编译 / 本地测试 / 读最近结果 + 读题目图片）、
-    **S6.8 工具链编辑页 + macOS 内存探测回退 + 文档收口**
-  - MCP 工具现状：共 **5 个**（`get_config_manual` / `init_config` /
-    `get_contest_problems` / `get_current_problem` / `get_contest_list`）。
+  - ✅ **MCP 三工具**（S6.7）：`compile_problem` / `run_local_test` / `get_last_test_result`，
+    并把题目图片与样例的本地路径并进 `get_current_problem`（不另开读图工具）
+  - ⏳ 待做：**S6.8 工具链编辑页 + macOS 内存探测回退 + 文档收口**
+  - MCP 工具现状：共 **8 个**（5 个只读/配置类 + 3 个测试工具）。
 - **注意：两个配置项当前不生效** —— `oj.defaultLanguage` 与 `oj.autoRefreshStatus`
   声明了但没有代码消费（详见 `docs/CONFIG.md` 的「声明了但当前版本没生效」）。
   要么接上，要么从声明里摘掉，别让它继续误导。

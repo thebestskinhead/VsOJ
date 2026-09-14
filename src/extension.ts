@@ -41,6 +41,8 @@ import { buildInitDeps } from './workspace/wiring';
 import { openSourceInLeftColumn as openLeftSource } from './workspace/openSource';
 import { buildTestDeps, listSampleIndexes } from './test/wiring';
 import { LocalTestRunner, RunnerDeps, TestRunResult } from './test/runner';
+import { TestToolService } from './test/tools';
+import { collectProblemResources } from './workspace/resources';
 import { registerOjTasks, OjTasksHandle } from './test/tasks';
 import {
   InitEntryDismissals, NO_FOLDER_TEXT, decideOpenProblem, decideSubmit, makeFacts,
@@ -162,6 +164,40 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // ==========================================
   // MCP 服务器
   // ==========================================
+
+  /** 工作区根（多处要用；没有工作区时为空串，交由各工具自己给可操作文案） */
+  const workspaceRoot = (): string => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+
+  /**
+   * 本地测试工具（S6.7）。与命令面板**走同一条路径**：装配用 `buildTestDeps`、
+   * 执行用 `LocalTestRunner`、描述用 `buildReport`；唯一区别是不弹结果页 ——
+   * MCP 是给 AI 的通道，刷屏式弹窗会打断正在刷题的人。
+   */
+  const testToolService = new TestToolService({
+    buildDeps: (cid, pid, opts) => buildTestDeps({
+      store: cache, cid, pid,
+      workspaceRoot: workspaceRoot(),
+      ...(opts.title ? { title: opts.title } : {}),
+      ...(opts.forceRebuild === undefined ? {} : { forceRebuild: opts.forceRebuild }),
+      log: logInfo,
+    }),
+    // 当前打开的是题面（它比 globalState 更贴近「他正在看哪道题」）
+    currentTarget: () => {
+      const cur = problemWebviewRef?.current;
+      const cid = cur?.cid || state.getCurrentCid() || '';
+      const pid = cur?.pid !== undefined ? String(cur.pid) : (state.getCurrentPid() ?? '');
+      return { cid, pid, title: '' };
+    },
+    resources: (cid, pid) => collectProblemResources({
+      store: cache, cid, pid, sourceFileName: getSourceFileName(),
+    }),
+    readText: (file) => {
+      try { return fs.readFileSync(file, 'utf8'); } catch { return undefined; }
+    },
+    readSource: (file) => readSourceText(file),
+    log: (m) => logInfo(m),
+  });
+
   const mcpToolHandler = new McpToolHandler(
     contestService,
     problemService,
@@ -170,6 +206,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     buildConfigToolService({
       extensionPath: context.extensionPath,
       globalStoragePath: context.globalStorageUri.fsPath,
+    }),
+    testToolService,
+    // 题目本地资源：题面图片与样例的绝对路径，并进 get_current_problem 一起返回
+    (cid, pid) => collectProblemResources({
+      store: cache, cid, pid, sourceFileName: getSourceFileName(),
     }),
   );
 

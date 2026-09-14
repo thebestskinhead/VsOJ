@@ -3,6 +3,8 @@ import { ProblemService } from '../api/problem';
 import { StateManager } from '../utils/state';
 import { Contest, ProblemBrief, ProblemDetail } from '../types';
 import { ConfigToolService } from '../config/tools';
+import { TestToolService } from '../test/tools';
+import { ProblemLocalResources } from '../workspace/resources';
 
 /** MCP Tool 定义 */
 export interface McpTool {
@@ -49,7 +51,11 @@ const TOOLS: McpTool[] = [
   },
   {
     name: 'get_current_problem',
-    description: '获取题目详细内容。默认返回当前打开的题目，也可通过参数指定任意比赛和题目。包括题目描述、输入说明、输出说明、样例输入输出等。',
+    description: '获取题目详细内容。默认返回当前打开的题目，也可通过参数指定任意比赛和题目。'
+      + '包括题目描述、输入说明、输出说明、样例输入输出；'
+      + '以及 `local` 段 —— 这道题在本机的落点：源文件、样例（成对的会被本地测试执行）、'
+      + '题面图片、测试产物与报告的**绝对路径**。'
+      + '题面里的图只看路径（不内联图片数据）：直接读 `local.assets` 里的文件即可。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -153,6 +159,87 @@ const TOOLS: McpTool[] = [
       required: [],
     },
   },
+  {
+    name: 'compile_problem',
+    description: '【本地验证第一步】只编译当前题目，不跑样例、不判定、不写结果文件。'
+      + '用来快速确认「编译过不过」：编译失败时直接返回编译器原文（不用去翻插件日志），'
+      + '成功时返回实际执行的命令、产物路径与运行命令。'
+      + '比 run_local_test 快（不跑样例），适合改完代码先探一次。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        cid: {
+          type: 'string',
+          description: '比赛ID（可选，不传则用当前比赛）',
+        },
+        pid: {
+          type: 'string',
+          description: '题目ID（可选，不传则用当前打开的题目）',
+        },
+        rebuild: {
+          type: 'boolean',
+          description: 'true = 无视产物复用配置强制重新编译（默认 false，按 oj.test.reuseBuild 走）',
+          default: false,
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'run_local_test',
+    description: '【本地验证第二步 · 主入口】把题目的源码编译、跑 samples/ 下的全部成对样例、'
+      + '逐字节比对判定，并落盘 result.json 与 report.md，返回与 report.md 逐字一致的报告文本'
+      + '（含每条用例判定、不通过用例的期望/实际输出与首个差异定位）。'
+      + '判定口径与站点一致（CRLF 归一化后严格逐字节）。'
+      + '**不会弹出结果页**；想让用户看到页面走命令面板的「本地测试」。'
+      + '跑之前先确认题目已初始化（samples/ 有成对样例），否则会返回「没有可用的用例」。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        cid: {
+          type: 'string',
+          description: '比赛ID（可选，不传则用当前比赛）',
+        },
+        pid: {
+          type: 'string',
+          description: '题目ID（可选，不传则用当前打开的题目）',
+        },
+        rebuild: {
+          type: 'boolean',
+          description: 'true = 强制重新编译（默认 false，源文件未变则可能复用上次产物）',
+          default: false,
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'get_last_test_result',
+    description: '【复核用】读上一次本地测试的结果，**不重跑、不编译**。'
+      + '返回那次测试的报告文本，并比对源码哈希判断结果是否已过期（源文件改过会在开头标出来）。'
+      + '适合「刚才结论是什么」「用户说改了代码，结果还作数吗」这类追问。'
+      + '还没跑过时返回可操作提示（结果文件路径 + 当前可跑样例序号）。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        cid: {
+          type: 'string',
+          description: '比赛ID（可选，不传则用当前比赛）',
+        },
+        pid: {
+          type: 'string',
+          description: '题目ID（可选，不传则用当前打开的题目）',
+        },
+        format: {
+          type: 'string',
+          description: 'markdown（默认，报告全文）或 json（原始 result.json + 过期标记，机器可读）',
+          default: 'markdown',
+          enum: ['markdown', 'json'],
+        },
+      },
+      required: [],
+    },
+  },
 ];
 
 /**
@@ -164,17 +251,23 @@ export class McpToolHandler {
   private problemService: ProblemService;
   private state: StateManager;
   private configService?: ConfigToolService;
+  private testService?: TestToolService;
+  private problemResources?: (cid: string, pid: string) => Promise<ProblemLocalResources | undefined>;
 
   constructor(
     contestService: ContestService,
     problemService: ProblemService,
     state: StateManager,
     configService?: ConfigToolService,
+    testService?: TestToolService,
+    problemResources?: (cid: string, pid: string) => Promise<ProblemLocalResources | undefined>,
   ) {
     this.contestService = contestService;
     this.problemService = problemService;
     this.state = state;
     this.configService = configService;
+    this.testService = testService;
+    this.problemResources = problemResources;
   }
 
   /** 返回所有注册的 tool 列表 */
@@ -195,10 +288,56 @@ export class McpToolHandler {
         return this.handleGetConfigManual(args);
       case 'init_config':
         return this.handleInitConfig(args);
+      case 'compile_problem':
+        return this.handleCompileProblem(args);
+      case 'run_local_test':
+        return this.handleRunLocalTest(args);
+      case 'get_last_test_result':
+        return this.handleGetLastTestResult(args);
       default:
         return {
           content: [{ type: 'text', text: `未知工具: ${name}` }],
         };
+    }
+  }
+
+  /** 测试工具不可用时的统一回复（插件没接线时不该静默返回空结果） */
+  private testServiceMissing(): McpToolResult {
+    return {
+      content: [{
+        type: 'text',
+        text: '测试工具不可用：插件未接线本地测试引擎。',
+      }],
+    };
+  }
+
+  /** 只编译 */
+  private async handleCompileProblem(args: Record<string, any>): Promise<McpToolResult> {
+    if (!this.testService) { return this.testServiceMissing(); }
+    try {
+      return { content: [{ type: 'text', text: await this.testService.compileProblem(args) }] };
+    } catch (e: any) {
+      return { content: [{ type: 'text', text: `编译失败（引擎异常）: ${e?.message ?? e}` }] };
+    }
+  }
+
+  /** 编译 + 跑样例 + 判定 */
+  private async handleRunLocalTest(args: Record<string, any>): Promise<McpToolResult> {
+    if (!this.testService) { return this.testServiceMissing(); }
+    try {
+      return { content: [{ type: 'text', text: await this.testService.runLocalTest(args) }] };
+    } catch (e: any) {
+      return { content: [{ type: 'text', text: `本地测试失败（引擎异常）: ${e?.message ?? e}` }] };
+    }
+  }
+
+  /** 读最近结果（不重跑） */
+  private async handleGetLastTestResult(args: Record<string, any>): Promise<McpToolResult> {
+    if (!this.testService) { return this.testServiceMissing(); }
+    try {
+      return { content: [{ type: 'text', text: await this.testService.getLastTestResult(args) }] };
+    } catch (e: any) {
+      return { content: [{ type: 'text', text: `读取最近结果失败: ${e?.message ?? e}` }] };
     }
   }
 
@@ -302,6 +441,9 @@ export class McpToolHandler {
         outputDesc: stripHtml(detail.outputDesc),
         sampleInput: detail.sampleInput,
         sampleOutput: detail.sampleOutput,
+        // 本地落点：题面图片与样例都已在本地缓存（初始化这题时抓的），
+        // 直接给绝对路径，需要时自己读 —— 不内联 base64（决策 D11），也不另开读图工具
+        local: await this.collectLocal(cid, pid),
       };
 
       return {
@@ -312,6 +454,57 @@ export class McpToolHandler {
         content: [{ type: 'text', text: `获取题目内容失败: ${e.message}` }],
       };
     }
+  }
+
+  /**
+   * 题目的本地资源（源文件 / 样例 / 题面图片 / 产物路径）。
+   *
+   * 比赛目录还没建立时**不报错**：题面本身仍然有价值，这里只说明「还没有本地目录」
+   * 以及怎么建 —— 拿不到路径不是失败，是「还没初始化」。
+   */
+  private async collectLocal(cid: string, pid: string): Promise<unknown> {
+    if (!this.problemResources) {
+      return { available: false, note: '插件未接线本地资源查询。' };
+    }
+    let res: ProblemLocalResources | undefined;
+    try {
+      res = await this.problemResources(cid, pid);
+    } catch (e: any) {
+      return { available: false, note: `读取本地资源失败：${e?.message ?? e}` };
+    }
+    if (!res) {
+      return {
+        available: false,
+        note: `比赛 ${cid} 的本地目录还没建立：先在侧边栏进入这场比赛`
+          + '（会建目录，并抓下样例与题面图片）。',
+      };
+    }
+
+    const runnable = new Set(res.runnableSampleIndexes);
+    return {
+      available: true,
+      dir: res.dir,
+      sourceFile: res.sourceFile,
+      sourceFileExists: res.sourceFileExists,
+      samplesDir: res.samplesDir,
+      assetsDir: res.assetsDir,
+      tempDir: res.tempDir,
+      resultFile: res.resultFile,
+      reportFile: res.reportFile,
+      hasTestResult: res.hasResult,
+      samples: res.samples.map((s) => ({
+        index: s.index,
+        input: s.input,
+        output: s.output,
+        hasInput: s.hasInput,
+        hasOutput: s.hasOutput,
+        runnable: runnable.has(s.index),
+      })),
+      skippedSamples: res.skipped.map((s) => ({ index: s.index, reason: s.reason })),
+      assets: res.assets,
+      note: '题面图片与样例都已在本地（初始化这题时抓取，离线也在）；'
+        + '要看图片直接读 assets 里的绝对路径。样例只有成对的（runnable=true）会被本地测试执行。',
+    };
   }
 
   /** 获取比赛列表 */
