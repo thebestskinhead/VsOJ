@@ -1210,7 +1210,7 @@ const CACHE_README = `# VsOJ Pro 内部数据
 ├── contest-raw/
 │   ├── contest.html                   比赛页原始 HTML（题目列表来源）
 │   └── status.html                    提交状态原始 HTML
-└── problems/<题号字母>-<标题>/
+└── problems/<全局题号>-<标题>/
     ├── raw/page.html                  题目页原始 HTML
     ├── assets/<hash>-<name>.<ext>     题面图片原始二进制
     ├── samples/1.in, 1.out            原始样例文本

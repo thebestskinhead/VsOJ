@@ -238,7 +238,7 @@ export function isAsciiSafe(p: string): boolean {
  * `cannot open output file ...: No such file or directory`（看着像路径不存在，极易误判）。
  *
  * 而相对路径 `temp/main.exe` 本身全是 ASCII，中文只留在子进程的 Unicode cwd 里，
- * 由内核在拼接时处理，不会产生编码损失。本项目布局 `<cid>-<标题>` / `<字母>-<标题>`
+ * 由内核在拼接时处理，不会产生编码损失。本项目布局 `<cid>-<标题>` / `<全局题号>-<标题>`
  * 目录名含中文是常态，所以这条是主路径，不是兜底。
  *
  * 跨盘或产物不在 `from` 之下时无解，返回 undefined 交给调用方退回 ASCII 中转。

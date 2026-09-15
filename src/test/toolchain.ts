@@ -63,7 +63,7 @@ export interface ToolchainDef {
    * 为什么需要这个能力位：本机实测 MinGW-w64 的 `ld` **无法在含中文的路径下创建产物**
    * （`cannot open output file ...\A-A+B问题\temp\main.exe: No such file or directory`，
    * 路径被按 GBK 解释成乱码）；而本项目布局里目录名含中文是常态
-   * （`<cid>-<标题>` / `<字母>-<标题>`）。同一个源文件只要产物路径是纯 ASCII 就能编译成功，
+   * （`<cid>-<标题>` / `<全局题号>-<标题>`）。同一个源文件只要产物路径是纯 ASCII 就能编译成功，
    * 且产物**放在**中文路径下运行完全正常（Node/Bash 都验证过）——所以只有「写产物」这一步需要绕。
    *
    * 对照实测：javac 往中文目录写 `.class`、python 跑中文路径脚本都正常，
