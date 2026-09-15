@@ -2,11 +2,11 @@ import * as vscode from 'vscode';
 import * as nodePath from 'path';
 import { getWorkspaceRootName, getBaseUrl } from '../utils/config';
 import {
-  slugify, sanitizePid, contestDirName, problemDirName, assetFileName,
+  slugify, sanitizePid, contestDirName, problemDirName, assetFileName, LAYOUT_VERSION,
 } from '../utils/slug';
 
 // 命名规则集中在 `utils/slug.ts`（纯函数，不依赖 VS Code），此处再导出以保持既有调用点
-export { slugify, sanitizePid, contestDirName, problemDirName, assetFileName };
+export { slugify, sanitizePid, contestDirName, problemDirName, assetFileName, LAYOUT_VERSION };
 
 /**
  * 【缓存层 · 路径】
@@ -30,10 +30,10 @@ export { slugify, sanitizePid, contestDirName, problemDirName, assetFileName };
  * 唯一例外是 `meta.json` —— 它是插件自身的元信息（cid / 标题 / 题目索引 / 时间戳），
  * 不是站点内容的拆解产物，必须保留。
  *
- * ## 布局（layoutVersion = 2）
+ * ## 布局（layoutVersion = 3）
  *
  * 「比赛项目文件夹」直接建在**工作区根目录下、可见**，便于当作普通项目打开、
- * 导出、打包、纳入 git；插件的内部数据（比赛列表缓存）留在隐藏的 `.vsoj/` 里。
+ * 导出、打包、纳入 git；插件的内部数据（比赛列表缓存、修复备份）留在隐藏的 `.vsoj/` 里。
  *
  *   <workspaceFolder>/
  *   ├── <oj.workspace.root>/                       内部数据根（默认 .vsoj，隐藏）
@@ -44,7 +44,7 @@ export { slugify, sanitizePid, contestDirName, problemDirName, assetFileName };
  *       ├── contest-raw/
  *       │   ├── contest.html                       比赛页原始 HTML（题目列表来源）
  *       │   └── status.html                        状态页原始 HTML
- *       └── problems/<题号字母>-<标题slug>/
+ *       └── problems/<目录名>/
  *           ├── raw/page.html                      题目页原始 HTML
  *           ├── assets/<hash>-<name>.<ext>         题面图片原始二进制
  *           ├── samples/1.in, 1.out                原始样例文本
@@ -52,15 +52,17 @@ export { slugify, sanitizePid, contestDirName, problemDirName, assetFileName };
  *           ├── test/result.json, report.md        本地测试产物
  *           └── temp/                              编译产物 + 运行临时文件
  *
+ * 目录名只是**标签**：某道题的缓存放在哪个目录，由 `meta.json.problems` 里
+ * 「身份 → 目录」的映射决定（读题目文件一律经该映射解析）。新目录按
+ * `<全局题号>-<题名slug>` 命名 —— 全局题号与位置无关，题集插入 / 删除题目时
+ * 名字不必跟着改；历史目录保持原名不动即可。
+ *
  * ## 清理语义
  *
  * 清理缓存删除「可重新获取」的部分，保留「不可再生」的部分：
  *   删除 → contest-raw/、raw/、assets/、samples/、temp/
- *   保留 → meta.json、<源文件名>、test/
+ *   保留 → meta.json、源文件、test/
  */
-
-/** 布局版本。改动目录结构时递增，便于识别历史遗留目录。 */
-export const LAYOUT_VERSION = 2;
 
 /** 默认源文件名（可通过 `oj.project.sourceFileName` 修改） */
 export const DEFAULT_SOURCE_FILE = 'main.cpp';
@@ -161,8 +163,8 @@ export class CachePaths {
    * 比赛目录路径集合。
    *
    * @param problemDirs pid → 题目目录名 的映射（来自 `meta.json`）。
-   *        传入后才能把 `problemDir(pid)` 解析到 `<字母>-<标题>` 形式；
-   *        缺失时退化为 `<pid>`（只应在尚未初始化的场景出现）。
+   *        传入后才能把 `problemDir(pid)` 解析到实际目录名；缺失时退化为 `<pid>`
+   *        （只应在尚未初始化的场景出现）。
    */
   public contest(cid: string, title?: string, problemDirs?: Record<string, string>): ContestPaths {
     return this.contestAt(nodePath.join(this.projectRoot, contestDirName(cid, title)), problemDirs);
@@ -210,13 +212,22 @@ export class CachePaths {
 
 /** 题目条目（`meta.json`）— pid ↔ 目录 的唯一映射来源 */
 export interface ProblemMetaEntry {
-  pid: string;
-  /** 比赛内题号字母（0→A），由 pid 推导 */
-  letter: string;
-  /** 站点上的全局题号（与 pid 无算术关系，仅作展示/追溯） */
+  /**
+   * 稳定身份（`g:<全局题号>` / `t:<题名比较键>`）——见 `cache/store.ts`。
+   * 缺失视为旧数据（布局 v2 及更早），对齐时按**目录名里的题名**兜底匹配。
+   */
+  identity?: string;
+  /**
+   * 站点上的全局题号（如 `1722`）。身份的来源；与 `pid` 无算术关系。
+   */
   globalId?: string;
-  /** 题目目录名（`<字母>-<标题slug>`），定稿后不再变化 */
+  /** 比赛内序号（0 起）。**会随题集变动**，只用于拼请求 URL 与展示 */
+  pid: string;
+  /** 当前序号对应的字母（0→A），展示用 */
+  letter: string;
+  /** 题目目录名（`<全局题号>-<题名slug>`），定稿后不再变化 */
   dir: string;
+  /** 题名（已剥掉「问题 X: 」位置前缀） */
   title: string;
 }
 
@@ -235,6 +246,11 @@ export interface ContestMeta {
   problemCount?: number;
   /** 题目索引：pid → 目录名 的唯一映射来源 */
   problems?: ProblemMetaEntry[];
+  /**
+   * 站点上已消失、但目录被保留的题（用户源码 / 测试历史不可再生，不做删除）。
+   * 不参与 pid 映射，仅用于通知与追溯。
+   */
+  orphans?: Array<{ dir: string; title?: string; globalId?: string }>;
   /**
    * 目录名尚未定稿（创建时还没有标题，目录名为纯 cid）。
    * 后续拿到真实标题时由 `finalizeContestTitle` 重命名为 `<cid>-<slug>` 并清除此标记。

@@ -10,7 +10,18 @@
  * 规则一经定稿**不得随意变更** —— 目录名一旦落盘就不再变化（见 `docs/PROGRESS.md` S1 踩坑），
  * 改规则会让老目录与新推导结果对不上。`test/cache-layout.test.js` 与 `test/init.test.js`
  * 会同时校验两处调用方的一致性。
+ *
+ * 命名里唯一允许"承载身份"的只有 {@link problemDirName} 的前缀，且它取的是
+ * **全局题号**（稳定）而不是位置字母（会变）——见 `cache/store.ts`。
  */
+
+/**
+ * 布局版本。改动目录结构时递增，便于识别历史遗留目录。
+ *
+ * 与命名规则放在同一处：版本号标记的正是「这套规则生成的目录长什么样」。
+ * `cache/paths.ts` 会把它写进 `meta.json`，并再导出一份以保持既有调用点。
+ */
+export const LAYOUT_VERSION = 3;
 
 /** 文件名安全化：去掉文件系统非法字符，压缩空白为 `-`，保留中英文可读性 */
 export function slugify(text: string, maxLen: number = 40): string {
@@ -30,15 +41,48 @@ export function contestDirName(cid: string, title?: string): string {
 }
 
 /**
- * 题目目录名：`<题号字母>-<标题slug>`（如 `A-复杂度分析(Ⅰ)`）。
+ * 题名归一化：剥掉站点加在标题前的**位置前缀**。
  *
- * 字母由 pid 确定性推导（0→A … 25→Z → 26→AA），因此命名可复现；
- * 标题为空时退化为纯字母。
+ * 站点在题面页把标题写成「问题 A: 复杂度分析(Ⅰ)」/「Problem A: ...」——
+ * 那个字母来自题目在比赛内的**位置**，插入 / 删除题目就会整体后移并改写。
+ * 凡是用来做身份比较、目录命名的地方都只取题名本身，避免把位置信息混进身份。
  */
-export function problemDirName(letter: string, title?: string): string {
-  const l = slugify(letter || '', 6) || 'P';
-  const slug = slugify(title || '', 40);
-  return slug ? `${l}-${slug}` : l;
+export function problemName(text?: string): string {
+  return (text || '')
+    .replace(/^\s*问题\s*[A-Za-z]{1,3}\s*[:：]\s*/, '')
+    .replace(/^\s*Problem\s*[A-Za-z]{1,3}\s*[:：]?\s*/i, '')
+    .trim();
+}
+
+/**
+ * 题名比较键：去掉「问题 X: 」的位置前缀，再抹平空白与标点。
+ *
+ * 目录名里的题名段与站点标题来自不同来源（前者经 `slugify` 把空白压成 `-`），
+ * 直接比较必然不相等；这里统一压成同一形态，供「同一道题」的兜底匹配使用。
+ */
+export function nameKey(text?: string): string {
+  return problemName(text)
+    .replace(/[\s\-_—－·、,，.。:：;；()（）[\]【】{}<>《》"'`]/g, '')
+    .toLowerCase()
+    .replace(/^问题[a-z]{1,3}/, '');
+}
+
+/**
+ * 题目目录名（**布局 v3**）：`<全局题号>-<题名slug>`（如 `1722-复杂度分析(Ⅰ)`）。
+ *
+ * 前缀取站点的**全局题号**（比赛页首格 `1722 Problem A` 里的 1722）——它与位置无关、
+ * 逐题唯一、随题走，因此题目在比赛内被插队 / 删除 / 重排时，目录名**不需要跟着改**。
+ * 旧布局用「位置字母」作前缀，位置一变名字立刻变成谎言（见 `cache/store.ts`）。
+ *
+ * `identity` 形如 `g:<全局题号>` / `t:<题名比较键>`（见 `cache/store.ts`）；
+ * 没有全局题号时退化为 `t<hash8>`，同样是确定性的，改名也不会撞车。
+ * 题名缺失时只留前缀。
+ */
+export function problemDirName(identity: string, title?: string): string {
+  const m = /^g:(\d+)$/.exec(identity || '');
+  const prefix = m ? m[1] : `t${hash8(identity || '')}`;
+  const slug = slugify(problemName(title), 40);
+  return slug ? `${prefix}-${slug}` : prefix;
 }
 
 /** 题目 ID 目录名（仅在缺少 `meta.json` 映射时的兜底；数字原样保留） */

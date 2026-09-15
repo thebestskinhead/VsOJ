@@ -18,18 +18,16 @@
  *
  * ## 语义边界（重要）
  *
- * - **增量补齐**：已落盘的题面 / 样例 / 图片直接复用不重拉，只补缺失项。
+ * - **增量补齐**：已落盘的题面 / 样例 / 图片**按题面内容对齐**后直接复用不重拉，只补缺失项。
  *   新鲜度**不归这里管** —— 那是 S4 重访刷新的职责，两套机制不重叠。
+ *   题集重排后同一序号上的题目换了人，缓存层会把索引按身份重新对齐（见 `cache/store.ts`）。
  * - **绝不覆盖源文件**：`main.cpp` 一旦存在就永不改写，哪怕用户已经写了代码。
  * - **串行、不重试、可取消、失败不中断**：与 S4 `ProblemRefresher` 同一套约定。
  * - 所有网络与落盘动作都通过 {@link ProblemInitDeps} 注入，可脱离 VS Code 单测。
  */
 
 import { ProblemDetail } from '../types';
-import { problemDirName, slugify } from '../utils/slug';
-
-// 命名规则与 `cache/paths.ts` 共用同一实现（`utils/slug.ts` 不依赖 VS Code，可直接单测）
-export { problemDirName, slugify };
+import { assetFileName } from '../utils/slug';
 
 /**
  * 新建源文件时的最小 C++ 骨架（D20）。
@@ -53,9 +51,9 @@ export const CPP_SKELETON = [
 /** 题目线索：pid 必填，标题 / 全局题号来自比赛页（拿得到就用，拿不到就现场解析） */
 export interface ProblemHint {
   pid: string;
-  /** 站点上的全局题号（与 pid 无算术关系，仅记录） */
+  /** 站点上的全局题号（题目身份的来源，见 `cache/store.ts`） */
   globalId?: string;
-  /** 题目标题（用于目录命名 `<字母>-<标题>`） */
+  /** 题目标题（仅用于登记与展示；目录名由缓存层按身份推导） */
   title?: string;
 }
 
@@ -80,8 +78,14 @@ export interface ProblemInitDeps {
   /** 从原始 HTML 解析结构化详情（解析属 parser 层职责，此处注入） */
   parseDetail: (html: string) => ProblemDetail | null;
 
-  /** 登记 `pid → 目录名` 映射。**必须在写题目文件之前调用** */
-  registerProblem: (entry: { pid: string; letter: string; globalId?: string; dir: string; title: string }) => Promise<void>;
+  /**
+   * 登记 `pid → 目录名` 映射。**必须在写题目文件之前调用**。
+   *
+   * 目录名由缓存层按**身份**（全局题号，退化到题名）推导并定稿 —— 站点插队 / 删题
+   * 会让序号整体平移，用序号定位会把新题写进旧题的目录（见 `cache/store.ts`）。
+   * 这里只交身份信息（pid / 全局题号 / 题名），不参与命名决策。
+   */
+  registerProblem: (entry: { pid: string; globalId?: string; title: string }) => Promise<void>;
 
   // ---- 样例 ----
   readSamples: (pid: string) => Promise<SampleLike[]>;
@@ -107,8 +111,6 @@ export interface ProblemInitDeps {
   isOffline: () => boolean;
   /** 错误 → 可读文案（通常复用 `session/guard` 的分类结果） */
   toError: (e: unknown) => string;
-  /** 由 pid 推导题号字母（`0→A`） */
-  letterOf: (pid: string) => string;
   log?: (msg: string) => void;
 }
 
@@ -167,6 +169,9 @@ export class ProblemInitializer {
    *
    * 顺序不可调换：**先登记目录名，再写文件** —— 否则 `problemDir(pid)` 只能退化成
    * 数字 pid，等标题拿到后再改名会让已写入的 `raw/` 变成孤儿目录。
+   *
+   * 调用方须保证题目索引已按**最新列表**对齐（`fetchProblemList` 会顺带做），
+   * 否则身份判定拿的是旧映射，题集重排后仍会把旧缓存当成新题的。
    */
   public async ensureProblem(hint: ProblemHint | string): Promise<EnsureProblemResult> {
     const { pid, globalId, title: hintTitle } = normalizeHint(hint);
@@ -190,37 +195,43 @@ export class ProblemInitializer {
         result.fetched = true;
       }
 
-      // 2) 解析 + 登记目录名（写任何文件之前）
+      // 2) 解析 + 登记身份（写任何文件之前；目录名由缓存层按身份推导并定稿）
       const detail = this.deps.parseDetail(html);
       const title = (detail?.title || hintTitle || '').trim();
-      const letter = this.deps.letterOf(pid);
-      await this.deps.registerProblem({
-        pid, letter, globalId, dir: problemDirName(letter, title), title,
-      });
+      await this.deps.registerProblem({ pid, ...(globalId ? { globalId } : {}), title });
 
       // 3) 题面落盘
       if (result.fetched) {
         await this.deps.saveProblemHtml(pid, html);
       }
 
-      // 4) 样例（站点固定单组；已存在则跳过）
-      const existing = await this.deps.readSamples(pid);
-      if (existing.length > 0) {
-        result.skipped.push(`样例（已有 ${existing.length} 组）`);
-      } else if (detail && (detail.sampleInput || '') !== '' ) {
-        await this.deps.saveSamples(pid, [{ input: detail.sampleInput, output: detail.sampleOutput }]);
-        result.samples = 1;
+      // 4) 样例：**以题面为权威**（站点固定单组）。
+      //    只判"有没有"是不够的：题集重排后同一目录里的样例可能属于别的题，
+      //    拿错的期望输出比对会让本地测试得出错误的"通过"。
+      if (detail && (detail.sampleInput || '') !== '') {
+        const existing = await this.deps.readSamples(pid);
+        const aligned = existing.length === 1
+          && (existing[0].input ?? '').trim() === (detail.sampleInput ?? '').trim()
+          && (existing[0].output ?? '').trim() === (detail.sampleOutput ?? '').trim();
+        if (aligned) {
+          result.skipped.push('样例（与题面一致）');
+        } else {
+          await this.deps.saveSamples(pid, [{ input: detail.sampleInput, output: detail.sampleOutput }]);
+          result.samples = 1;
+        }
       } else if (detail) {
         result.skipped.push('样例（题面未给出）');
       }
 
-      // 5) 题面图片（约 4% 的题带图；已抓过就跳过）
-      const assets = await this.deps.listAssets(pid);
-      if (assets.length > 0) {
-        result.skipped.push(`图片（已有 ${assets.length} 个）`);
-      } else if (!this.deps.isOffline()) {
-        const urls = collectImageUrls(html);
-        for (const url of urls) {
+      // 5) 题面图片：按题面引用的 URL 集合**补齐缺失的**（已抓过的不重复下载）
+      const urls = collectImageUrls(html);
+      if (urls.length > 0 && !this.deps.isOffline()) {
+        const have = new Set(await this.deps.listAssets(pid));
+        const missing = urls.filter(u => !have.has(assetFileName(u)));
+        if (missing.length === 0) {
+          result.skipped.push(`图片（题面引用的 ${urls.length} 个都在本地）`);
+        }
+        for (const url of missing) {
           try {
             const buf = await this.deps.fetchAsset(url);
             await this.deps.saveAsset(pid, url, buf);

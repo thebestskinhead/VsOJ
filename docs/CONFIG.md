@@ -350,7 +350,7 @@
 | 插件设置 | 工作区 `.vscode/settings.json`（或全局 User settings） | AI（`init_config`）或用户 | `oj.*` 全部配置项 |
 | 工具链定义 | `.vsoj/toolchains.json`（可配 `oj.test.toolchainsFile` 改） | AI / 用户 | 只放覆盖与新增，内置四套在代码里 |
 | 本地数据 | `.vsoj/`（可配 `oj.workspace.root` 改） | 插件 | 缓存、比赛项目、题目目录 |
-| 题目工作目录 | `<工作区>/<cid>-<标题>/problems/<字母>-<标题>/` | 插件 | 该题的 `main.cpp` / `samples/` / `temp/` / `test/` |
+| 题目工作目录 | `<工作区>/<cid>-<标题>/problems/<全局题号>-<标题>/` | 插件 | 该题的 `main.cpp` / `samples/` / `temp/` / `test/` |
 
 **优先级**：工作区设置 > 全局 User 设置 > `package.json` 里的默认值。
 `init_config` 默认写**工作区**级（`scope` 可用 `global` 改成全局）。

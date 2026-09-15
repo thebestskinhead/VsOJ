@@ -1,9 +1,9 @@
-// 缓存层布局与语义验证（布局 v2）
+// 缓存层布局与语义验证（布局 v3）
 //
 // 核心断言：
 //   1. 同一 cid 只产生一个目录（S1 的老问题，防回归）
 //   2. 比赛项目文件夹建在**工作区根下、可见**；列表缓存在隐藏的 .vsoj/ 里
-//   3. 题目目录名 = <题号字母>-<标题>，由 meta.json.problems 唯一映射
+//   3. 题目目录名 = <全局题号>-<标题>，由 meta.json.problems 唯一映射
 //   4. 缓存里**只有原始信息**（HTML / 图片二进制 / 样例文本），没有解析产物
 //   5. 清理缓存删站点数据 + temp/，保留 main.cpp + test/ + meta.json
 //
@@ -54,7 +54,7 @@ const hiddenDirs = () => fs.readdirSync(WORKSPACE).filter(n => n.startsWith('.')
   check('meta.pendingTitle 标记为真', (await store.readContestMeta('3772')).pendingTitle, true);
   check('比赛目录建在工作区根下（可见）', path.dirname(p1.dir), WORKSPACE);
   ok('内部数据根是隐藏的 .vsoj', hiddenDirs().includes('.vsoj'));
-  check('meta.layoutVersion 写入 2', (await store.readContestMeta('3772')).layoutVersion, 2);
+  check('meta.layoutVersion 写入 3', (await store.readContestMeta('3772')).layoutVersion, 3);
   ok('尚未登记题目时目录退化为数字 pid', path.basename(p1.problemDir('0')) === '0');
 
   console.log('\n[2] 拿到比赛标题后写入比赛页（目录应重命名且只重命名一次）');
@@ -70,11 +70,11 @@ const hiddenDirs = () => fs.readdirSync(WORKSPACE).filter(n => n.startsWith('.')
   check('meta.pendingTitle 已清除', !!meta.pendingTitle, false);
   check('meta.cid', meta.cid, '3772');
 
-  console.log('\n[3] 登记题目（pid → 目录名 的唯一映射）');
+  console.log('\n[3] 登记题目（身份 → 目录名 的唯一映射）');
   const cp0 = await store.resolveContestDir('3772');
-  await store.registerProblem('3772', { pid: '0', letter: 'A', globalId: '1722', dir: 'A-A + B', title: 'A + B' });
+  await store.registerProblem('3772', { pid: '0', globalId: '1722', title: 'A + B' });
   const cp = await store.resolveContestDir('3772');
-  check('题目目录名改为 <字母>-<标题>', path.basename(cp.problemDir('0')), 'A-A + B');
+  check('题目目录名 = <全局题号>-<标题>', path.basename(cp.problemDir('0')), '1722-A-+-B');
   ok('历史遗留的数字 pid 目录已迁移（不产生孤儿）', !fs.existsSync(path.join(cp.dir, 'problems', '0')));
   ok('迁移后原有的 raw/page.html 仍在', fs.existsSync(cp.problemHtml('0')));
   check('meta.problems 记录 globalId', (await store.readContestMeta('3772')).problems[0].globalId, '1722');
@@ -87,7 +87,7 @@ const hiddenDirs = () => fs.readdirSync(WORKSPACE).filter(n => n.startsWith('.')
   console.log('\n[4] 落盘的必须是原始信息');
   ok('contest-raw/contest.html 存在', fs.existsSync(cp.contestHtml));
   ok('contest-raw/status.html 存在', fs.existsSync(cp.statusHtml));
-  ok('problems/A-A + B/raw/page.html 存在', fs.existsSync(cp.problemHtml('0')));
+  ok('problems/1722-A-+-B/raw/page.html 存在', fs.existsSync(cp.problemHtml('0')));
   check('contest.html 内容为原始 HTML', await store.readText(cp.contestHtml), CONTEST_HTML_LATER);
 
   // 解析产物不得落盘
@@ -153,10 +153,10 @@ const hiddenDirs = () => fs.readdirSync(WORKSPACE).filter(n => n.startsWith('.')
   await store.writeProblemHtml('3772', '1', '<html>page-1</html>');
   await store.writeContestPageHtml('3772', '<html>x</html>', '');
   await store.ensureContestDir('3772', '');
-  await store.registerProblem('3772', { pid: '0', letter: 'A', dir: 'A-改名了吧', title: '改名了吧' });
+  await store.registerProblem('3772', { pid: '0', globalId: '1722', title: '改名了吧' });
   check('目录数仍为 1', visibleDirs().length, 1);
   check('目录名定稿后不随标题变化（C11）',
-    path.basename((await store.resolveContestDir('3772')).problemDir('0')), 'A-A + B');
+    path.basename((await store.resolveContestDir('3772')).problemDir('0')), '1722-A-+-B');
 
   console.log('\n[10] 多比赛隔离');
   await store.writeContestPageHtml('4001', '<html>c4001</html>', '秋季赛');
@@ -175,12 +175,12 @@ const hiddenDirs = () => fs.readdirSync(WORKSPACE).filter(n => n.startsWith('.')
   check('sanitizePid 非数字', P.sanitizePid('A/B'), 'A-B');
   check('sanitizePid 数字', P.sanitizePid('12'), '12');
   check('slugify 截断', P.slugify('x'.repeat(80), 10), 'x'.repeat(10));
-  check('problemDirName 字母+标题', P.problemDirName('A', '复杂度分析(Ⅰ)'), 'A-复杂度分析(Ⅰ)');
-  check('problemDirName 空标题退化为纯字母', P.problemDirName('Q', ''), 'Q');
+  check('problemDirName 全局题号+标题', P.problemDirName('g:1722', '复杂度分析(Ⅰ)'), '1722-复杂度分析(Ⅰ)');
+  check('problemDirName 空标题只留前缀', P.problemDirName('g:1722', ''), '1722');
   check('numToLetter 0 → A', require('../out/utils/format.js').numToLetter(0), 'A');
   check('numToLetter 25 → Z', require('../out/utils/format.js').numToLetter(25), 'Z');
   check('numToLetter 26 → AA', require('../out/utils/format.js').numToLetter(26), 'AA');
-  check('LAYOUT_VERSION', P.LAYOUT_VERSION, 2);
+  check('LAYOUT_VERSION', P.LAYOUT_VERSION, 3);
   check('默认源文件名', P.DEFAULT_SOURCE_FILE, 'main.cpp');
   check('mainSource 用默认源文件名', path.basename(cp.mainSource('0')), 'main.cpp');
   check('mainSource 可指定文件名', path.basename(cp.mainSource('0', 'sol.py')), 'sol.py');
@@ -210,7 +210,7 @@ const hiddenDirs = () => fs.readdirSync(WORKSPACE).filter(n => n.startsWith('.')
   ok('test/ 保留（评测历史）', fs.existsSync(cp.testResult('0')));
   check('清理后仍能定位目录', !!(await store.resolveContestDir('3772')), true);
   check('清理后题目目录名不变（仍由 meta 映射）',
-    path.basename((await store.resolveContestDir('3772')).problemDir('0')), 'A-A + B');
+    path.basename((await store.resolveContestDir('3772')).problemDir('0')), '1722-A-+-B');
 
   console.log('\n[13] cache.enabled=false 时站点数据不落盘，但用户资产仍可写');
   const ws2 = path.join(os.tmpdir(), `vsoj-cache-test-ws2-${process.pid}`);

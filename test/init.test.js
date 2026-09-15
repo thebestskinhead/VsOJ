@@ -7,8 +7,9 @@ const { installVscodeStub, makeChecker, sleep } = require('./helpers/stub');
 installVscodeStub();
 
 const {
-  ProblemInitializer, CPP_SKELETON, collectImageUrls, problemDirName,
+  ProblemInitializer, CPP_SKELETON, collectImageUrls,
 } = require('../out/workspace/initializer.js');
+const { problemDirName, assetFileName } = require('../out/utils/slug.js');
 
 const { check, ok, done } = makeChecker();
 
@@ -101,13 +102,6 @@ function makeEnv(opts = {}) {
     // ---- 环境 ----
     isOffline: () => !!opts.offline,
     toError: (e) => (e && e.message) || String(e),
-    letterOf: (pid) => {
-      const n = parseInt(pid, 10);
-      if (!Number.isFinite(n) || n < 0) { return '?'; }
-      let s = '', num = n;
-      do { s = String.fromCharCode(65 + (num % 26)) + s; num = Math.floor(num / 26) - 1; } while (num >= 0);
-      return s;
-    },
     log: (m) => log.push(m),
   };
 
@@ -135,10 +129,9 @@ function makeEnv(opts = {}) {
     check('无跳过项', r.skipped, []);
     check('写入题面原始 HTML', env.has('raw/0/page.html'), true);
     check('写入样例 1.in/1.out 含义（input/output）', env.savedSamples.get('0'), [{ input: '1 2\n', output: '3\n' }]);
-    check('登记目录名（字母-标题）', env.registered.get('0').dir, 'A-示例题目');
+    check('登记实例的 pid', env.registered.get('0').pid, '0');
     check('登记全局题号', env.registered.get('0').globalId, '1722');
     check('登记标题取自题面（比列表页更权威）', env.registered.get('0').title, '示例题目');
-    check('登记字母', env.registered.get('0').letter, 'A');
     check('临时目录已建', env.has('dir:p0/temp'), true);
     check('测试目录已建', env.has('dir:p0/test'), true);
   }
@@ -147,7 +140,7 @@ function makeEnv(opts = {}) {
     const env = makeEnv({ title: '' });
     const r = await new ProblemInitializer(env.deps).ensureProblem({ pid: '3', title: '列表页标题' });
     check('ok', r.ok, true);
-    check('回退到列表页标题', env.registered.get('3').dir, 'D-列表页标题');
+    check('回退到列表页标题', env.registered.get('3').title, '列表页标题');
   }
 
   // ---------- 2. 顺序契约：先登记目录名，再写任何文件 ----------
@@ -225,11 +218,20 @@ function makeEnv(opts = {}) {
     ok('图片二进制已存', env.has('assets/9//JudgeOnline/upload/image/a.png'));
   }
   {
+    // 题面引用的图片都已落盘 → 一个都不重抓（判据是 URL 推导出的文件名）
     const env = makeEnv();
-    env.deps.listAssets = async () => ['已经有图'];
+    env.deps.listAssets = async () => [assetFileName('/JudgeOnline/upload/image/a.png')];
     const r = await new ProblemInitializer(env.deps).ensureProblem('9');
-    check('已有图片则不重抓', env.fetchCounts.asset, 0);
+    check('题面引用的图片都在本地则不重抓', env.fetchCounts.asset, 0);
     ok('记入跳过', r.skipped.some(s => s.includes('图片')));
+  }
+  {
+    // 目录里有别的题的残留图片 → 不算数，该抓的照样抓
+    const env = makeEnv();
+    env.deps.listAssets = async () => ['别的题留下的图.png'];
+    const r = await new ProblemInitializer(env.deps).ensureProblem('9');
+    check('残留图片不算「已抓过」', env.fetchCounts.asset, 1);
+    check('题面图片照常落盘', r.assets, 1);
   }
   {
     const env = makeEnv({ failAssetUrls: ['/JudgeOnline/upload/image/a.png'] });
@@ -324,16 +326,16 @@ function makeEnv(opts = {}) {
   // ---------- 13. 目录命名规则（与 paths.ts 共用 slug.ts） ----------
   console.log('\n[13] 目录命名规则');
   {
-    check('0 → A-标题', problemDirName('A', '复杂度分析(Ⅰ)'), 'A-复杂度分析(Ⅰ)');
-    check('标题为空 → 纯字母', problemDirName('B', ''), 'B');
-    check('非法字符被替换', problemDirName('C', 'a/b:c*d?e'), 'C-a-b-c-d-e');
-    check('26 → AA', problemDirName('AA', 'x'), 'AA-x');
-    check('超长截断', problemDirName('D', 'x'.repeat(60)).length, 2 + 40);
+    check('全局题号 + 标题', problemDirName('g:1722', '复杂度分析(Ⅰ)'), '1722-复杂度分析(Ⅰ)');
+    check('标题为空 → 只留前缀', problemDirName('g:1722', ''), '1722');
+    check('非法字符被替换', problemDirName('g:5', 'a/b:c*d?e'), '5-a-b-c-d-e');
+    check('无全局题号 → 确定性哈希前缀', problemDirName('t:abc', 'x').startsWith('t'), true);
+    check('超长截断', problemDirName('g:7', 'x'.repeat(60)).length, 2 + 40);
 
     // 与 cache/paths.ts 的同名函数必须一致（同一实现的两处出口）
     const paths = require('../out/cache/paths.js');
     check('与 paths.problemDirName 一致',
-      paths.problemDirName('E', '双指针 (Ⅱ)'), problemDirName('E', '双指针 (Ⅱ)'));
+      paths.problemDirName('g:1722', '双指针 (Ⅱ)'), problemDirName('g:1722', '双指针 (Ⅱ)'));
   }
 
   // ---------- 14. collectImageUrls ----------

@@ -51,7 +51,7 @@
 |---|---|---|
 | 缓存读写 | `cache/store.ts` | 不允许 `views/*` 自己拼路径、自己 `fs.writeFile` |
 | 目录布局 | `cache/paths.ts` | 不允许业务代码硬编码 `<cid>-<标题>/problems/...` |
-| 命名规则（slug / 题号字母 / 资产文件名） | `utils/slug.ts` | 不允许在 `paths.ts` 与 `initializer.ts` 各留一份实现 |
+| 命名规则（目录名 / slug / 资产文件名） | `utils/slug.ts` | 不允许在 `paths.ts` 与 `initializer.ts` 各留一份实现 |
 | 项目初始化落盘 | `workspace/initializer.ts` | 不允许直接 `require('vscode')`；网络与磁盘动作必须依赖注入 |
 | 能力边界判定 | `workspace/guard.ts` | 不允许在命令实现里散写 `if (!workspaceFolders)` 之类的判断 |
 | 心跳与探测 | `session/keeper.ts` | 不允许在 `extension.ts` 里 `setInterval` |
@@ -67,6 +67,9 @@
   - 工作区级（内容）：比赛目录、题目 markdown、样例 `.in/.out`、图片资源
   - 全局级（索引，`context.globalStorageUri`）：`cid → 目录相对路径`、`lastSyncAt`、心跳时间戳 —— 避免把「本机路径」写进可提交的工作区
 - **写穿（write-through）**：`api/*` 拿到解析结果后顺手写缓存；`views/*` 读时**先缓存后网络**，带 TTL。
+- **题目索引按身份对齐**：`meta.json.problems` 记的是「身份 → 目录」，身份取站点的**全局题号**
+  （拿不到时退到目录名里的题名）。比赛内序号（`pid`）只用于拼请求与展示 —— 往题集中间插题 /
+  删题会让后续序号整体平移，拿序号当键会让题面、样例、图片、源码、测试历史集体错位一格。
 - **离线开关**：`oj.cache.offline` = 强制只读缓存；`oj.cache.enabled` = 是否写缓存。
 
 ### 3.3 会话层设计要点

@@ -39,6 +39,7 @@ import { parseProblemList } from './utils/parser';
 import { formatBytes, numToLetter } from './utils/format';
 import { ProblemInitializer } from './workspace/initializer';
 import { buildInitDeps } from './workspace/wiring';
+import { AlignPlan } from './cache/store';
 import { openSourceInLeftColumn as openLeftSource } from './workspace/openSource';
 import { buildTestDeps, listSampleIndexes } from './test/wiring';
 import { LocalTestRunner, RunnerDeps, TestRunResult } from './test/runner';
@@ -63,7 +64,36 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // 必须先于 api 层构造：api 层现在承担「缓存优先 + 原样写穿」的职责。
   const cache = initCacheStore(context);
 
-  const contestService = new ContestService(auth, cache);
+  /**
+   * 题集变动提示（同一场比赛、同一种变动只提示一次）。
+   *
+   * 老师往题集中间插题 / 删题之后，后面所有题目的**序号**都会变，侧边栏里的字母也跟着变。
+   * 插件按题目身份（全局题号）对齐，本地代码与测试记录仍跟着各自那道题走 ——
+   * 这一点不明说，用户看到"字母全变了"会以为题目被换掉、自己的代码丢了。
+   */
+  const shiftNoted = new Map<string, string>();
+  function noteProblemShift(cid: string, plan: AlignPlan): void {
+    if (!plan.added.length && !plan.orphans.length && !plan.moved.length) { return; }
+    const sig = [
+      plan.added.map(e => e.identity).join(','),
+      plan.orphans.map(e => e.dir).join(','),
+      plan.moved.map(e => `${e.identity}@${e.pid}`).join(','),
+    ].join('|');
+    if (shiftNoted.get(cid) === sig) { return; }
+    shiftNoted.set(cid, sig);
+
+    const parts: string[] = [];
+    if (plan.added.length) { parts.push(`新增 ${plan.added.length} 道题`); }
+    if (plan.moved.length) { parts.push(`${plan.moved.length} 道题的题号有变动`); }
+    if (plan.orphans.length) { parts.push(`${plan.orphans.length} 道题已不在比赛里（本地目录保留）`); }
+    vscode.window.showInformationMessage(
+      `[OJ] 比赛 ${cid} 的题目列表有变动：${parts.join('，')}。已按题目本身对齐，本地代码与测试记录不会错位。`,
+    );
+  }
+
+  const contestService = new ContestService(auth, cache, {
+    onIndexSynced: (cid, plan) => noteProblemShift(cid, plan),
+  });
   const problemService = new ProblemService();
   const submitService = new SubmitService(auth, cache);
 
@@ -398,6 +428,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         const parsed = parseProblemList(html);
         // 比赛标题只存在于比赛页里 → 目录名在此定稿
         await cache.writeContestPageHtml(cid, html, parsed.title);
+        // 刷新拿到的列表同样要按身份重建索引：题集被插队后，序号已经不能代表题目
+        try {
+          const plan = await cache.syncProblemIndex(cid, parsed.problems);
+          noteProblemShift(cid, plan);
+        } catch (e) {
+          logInfo(`[refresh] 题目索引对齐失败：${describeThrown(e)}`);
+        }
         await cache.touchContestMeta(cid, { title: parsed.title, problemCount: parsed.problems.length });
       },
       saveProblemHtml: (pid, html) => cache.writeProblemHtml(cidProvider(), pid, html),

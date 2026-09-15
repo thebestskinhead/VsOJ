@@ -5,6 +5,7 @@ import {
   CachePaths, ContestPaths, ContestMeta, CacheIndex, ProblemMetaEntry,
   sanitizePid, contestDirName, metaMatchesBaseUrl, assetFileName,
 } from './paths';
+import { nameKey, problemDirName, problemName, slugify } from '../utils/slug';
 import { isCacheEnabled, isOfflineMode, getCacheTtlMs, getBaseUrl } from '../utils/config';
 import { CacheStat, computeStat } from './freshness';
 
@@ -21,13 +22,24 @@ import { CacheStat, computeStat } from './freshness';
  *
  * 唯一的非站点产物是 `meta.json`，它是插件自身的元信息。
  *
- * ## 目录归属（布局 v2）
+ * ## 目录归属
  *
  * - **比赛项目文件夹**建在工作区根目录下、**可见**（`<cid>-<标题>`），可直接当项目打开 / git；
  * - **比赛列表缓存**这类没有比赛归属的内部数据留在 `.vsoj/` 里。
  *
  * 因此「定位比赛目录」从「扫 `.vsoj/contests/`」变成「按索引 + 扫工作区根」——
  * 工作区根可能有任意多的无关目录，扫描时**只认带合法 `meta.json` 的目录**。
+ *
+ * ## 题目索引（为什么不能拿序号当身份）
+ *
+ * `meta.json.problems` 是「身份 → 目录」的映射，身份的推导与对齐见文件末尾的
+ * {@link alignProblems}。命门是**位置不能当身份**：站点往题集中间插题 / 删题之后，
+ * 比赛内序号（`pid`）上的题目会换人、后续题目整体平移；一旦拿序号做持久化的键，
+ * 题面 / 样例 / 图片 / 用户源码 / 测试历史会集体错位，症状就是"打开甲题看到乙题的题面、
+ * 提交时把甲的代码交到乙题"。
+ *
+ * 所以每次拿到题目列表（{@link CacheStore.syncProblemIndex}）都按身份与本地目录重新对齐：
+ * 同一道题继续用它的目录，新题新建目录，站点上消失的题保留目录（用户源码不可再生）。
  *
  * ## 读语义
  *
@@ -272,7 +284,7 @@ export class CacheStore {
    * 由目录构造路径集合。
    *
    * 关键：读 `meta.json.problems` 得到 **pid → 目录名** 的映射后再构造，
-   * 否则 `problemDir(pid)` 只能退化成数字 pid，与初始化后的 `<字母>-<标题>` 不一致。
+   * 否则 `problemDir(pid)` 只能退化成数字 pid，与实际目录名不一致。
    */
   private async pathsForDir(dir: string): Promise<ContestPaths> {
     const meta = await this.readJson<ContestMeta>(nodePath.join(dir, 'meta.json'));
@@ -416,30 +428,58 @@ export class CacheStore {
   }
 
   /**
-   * 登记一道题的目录名到 `meta.json.problems`（pid → 目录 的唯一映射来源）。
+   * 登记一道题的目录（`meta.json.problems` 是「身份 → 目录」的唯一映射来源）。
    *
    * **必须在写题目文件之前调用** —— 否则 `problemDir(pid)` 只能退化成数字 pid，
    * 等标题拿到后再改名会让已写入的 `raw/` 变成孤儿目录。
    *
-   * 幂等：已有同名条目则只更新标题 / 全局题号，**不改目录名**（C11 目录名定稿不再变化）。
-   * 若发现历史遗留的「数字 pid 目录」，顺带迁移到新目录名。
+   * 定位方式是**身份**（全局题号，退到目录名里的题名）而不是 `pid`：站点插入 / 删除
+   * 题目会让序号整体平移，用 `pid` 定位会把新题的内容写进旧题的目录、并让旧题的内容
+   * 被当成新题的缓存继续复用。命中已有条目时**只刷新位置与题名、沿用其目录名**；
+   * 未命中才新起目录（避开已被占用的目录名）。
+   *
+   * 常态下索引已由 {@link syncProblemIndex} 建好，这里服务于「只打开单道题、
+   * 没走过列表同步」的入口。
    */
-  public async registerProblem(cid: string, entry: ProblemMetaEntry): Promise<void> {
+  public async registerProblem(cid: string, entry: {
+    pid: string; globalId?: string; title: string;
+  }): Promise<ProblemMetaEntry> {
     const paths = await this.ensureContestDir(cid, '');
     const meta = (await this.readJson<ContestMeta>(paths.meta)) ?? {
       cid, title: '', baseUrl: getBaseUrl(),
       createdAt: new Date().toISOString(), lastSyncAt: new Date().toISOString(),
     };
 
+    const fresh = entryOf({ pid: String(entry.pid), title: entry.title, globalId: entry.globalId });
+    const identity = fresh.identity;
     const list = meta.problems ? [...meta.problems] : [];
-    const i = list.findIndex(p => String(p.pid) === String(entry.pid));
+
+    // 身份优先；旧数据（没有 identity 字段）按「目录名里的题名 → 题名」兜底
+    const wantKey = nameKey(entry.title);
+    const i = list.findIndex(p => {
+      if (p.identity && p.identity === identity) { return true; }
+      if (p.globalId && entry.globalId && String(p.globalId) === String(entry.globalId)) { return true; }
+      if (!wantKey) { return false; }
+      return nameKey(nameFromDir(p.dir)) === wantKey || nameKey(p.title) === wantKey;
+    });
+
+    let saved: ProblemMetaEntry;
     if (i >= 0) {
-      // 目录名已定稿 → 只补标题 / 全局题号
-      list[i] = { ...list[i], title: entry.title || list[i].title, globalId: entry.globalId || list[i].globalId };
+      // 目录名已定稿 → 只刷新位置与题名
+      saved = {
+        ...list[i],
+        identity,
+        ...(entry.globalId ? { globalId: String(entry.globalId) } : {}),
+        pid: String(entry.pid),
+        letter: letterOf(entry.pid),
+        title: fresh.title,
+      };
+      list[i] = saved;
     } else {
-      list.push(entry);
+      const taken = new Set(list.map(p => p.dir));
+      saved = { ...fresh, dir: uniqueProblemDir(fresh.dir, taken) };
+      list.push(saved);
     }
-    // 题号字母由 pid 推导，始终可校正
     list.sort((a, b) => Number(a.pid) - Number(b.pid));
 
     meta.problems = list;
@@ -451,12 +491,112 @@ export class CacheStore {
     // 同步快照：新建的题目目录名要立刻能被同步入口（initializer 拼路径）看到
     this.contestCache.set(String(cid), { dir: paths.dir, problemDirs: pidDirMap(meta) });
 
-    // 历史遗留迁移：<pid> → <字母>-<标题>（仅在旧目录存在且新目录不存在时）
+    // 「先打开题目页、后拿到列表」会留下数字 pid 目录；把它归位到正式目录名，
+    // 否则那份题面缓存与用户代码会失联（目标已存在时不动，绝不覆盖）
     const legacy = nodePath.join(paths.dir, 'problems', sanitizePid(entry.pid));
-    const target = nodePath.join(paths.dir, 'problems', entry.dir);
+    const target = nodePath.join(paths.dir, 'problems', saved.dir);
     if (legacy !== target && (await this.exists(legacy)) && !(await this.exists(target))) {
       try { await fs.rename(legacy, target); } catch { /* ignore */ }
     }
+    return saved;
+  }
+
+  /**
+   * 用**题目列表**重建题目索引（对齐的唯一入口）。
+   *
+   * 每次拿到列表（无论来自缓存还是网络）都调一次：按身份把站点上的题与本地目录对上，
+   * 同一道题继续用它的目录，新题新建，站点上消失的题保留目录但不再映射。
+   * 返回对齐计划，供上层判断"题集是否发生变动"并通知用户。
+   *
+   * 旧条目（布局 v2 及更早）没有身份字段，且其**题名字段可能已被后来的题覆盖**
+   * （同一序号换了人时题名会一起被改写），因此身份优先取**目录名里的题名** ——
+   * 目录名是建目录那一刻定下的，之后不会再变。一道题在磁盘上留下多个目录时
+   * （历史错位造成），按内容分量排序让「有你的源码、缓存更完整」的那个先参与匹配。
+   *
+   * 幂等：列表没变时结果逐字段相同，只刷新 `lastSyncAt`。
+   */
+  public async syncProblemIndex(cid: string, list: ProblemLike[]): Promise<AlignPlan> {
+    const paths = await this.ensureContestDir(cid, '');
+    const meta = (await this.readJson<ContestMeta>(paths.meta)) ?? {
+      cid, title: '', baseUrl: getBaseUrl(),
+      createdAt: new Date().toISOString(), lastSyncAt: new Date().toISOString(),
+    };
+
+    const prev = await this.orderByContent(paths, meta.problems ?? []);
+    const plan = alignProblems(prev, list);
+
+    meta.problems = plan.entries;
+    meta.problemCount = plan.entries.length;
+    meta.layoutVersion = paths.layoutVersion;
+    meta.lastSyncAt = new Date().toISOString();
+    // 孤儿目录只登记一次，避免每轮同步重复堆积
+    const known = new Set((meta.orphans ?? []).map(o => o.dir));
+    const merged = [...(meta.orphans ?? [])];
+    for (const o of plan.orphans) {
+      if (known.has(o.dir)) { continue; }
+      known.add(o.dir);
+      merged.push({ dir: o.dir, ...(o.title ? { title: o.title } : {}) });
+    }
+    if (merged.length) { meta.orphans = merged; }
+    await this.writeJson(paths.meta, meta);
+    this.contestCache.set(String(cid), { dir: paths.dir, problemDirs: pidDirMap(meta) });
+    return plan;
+  }
+
+  /**
+   * 把旧条目按「目录内容的分量」重排：有用户源码的最重，其次有测试历史，再次有站点缓存。
+   *
+   * 只影响同名目录的决胜 —— 一道题在磁盘上留下多个目录时（历史错位造成），对齐只认一个，
+   * 认哪个决定了用户的代码留在哪儿。有源码的目录最不该被放弃。
+   */
+  private async orderByContent(paths: ContestPaths, list: ProblemMetaEntry[]): Promise<ProblemMetaEntry[]> {
+    if (list.length < 2) { return list; }
+    const scored = await Promise.all(list.map(async (e, i) => ({
+      e, i, w: await this.weighDir(nodePath.join(paths.dir, 'problems', e.dir)),
+    })));
+    scored.sort((a, b) => (b.w - a.w) || (a.i - b.i));
+    return scored.map(x => x.e);
+  }
+
+  /**
+   * 目录分量 = **用户产物的体积**（题目目录下的直接文件 + `test/` 子树）。
+   *
+   * 只影响同名目录的决胜：一道题在磁盘上留下多个目录时（历史错位造成）对齐只认一个，
+   * 认哪个决定了用户的代码留在哪儿。骨架源文件只有百来字节，真写过的代码与测试记录
+   * 都是 KB 级 —— 按体积排序就能把「用户真正动过」的那个挑出来，站点缓存不计入。
+   */
+  private async weighDir(dir: string): Promise<number> {
+    let entries: import('fs').Dirent[] = [];
+    try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { return 0; }
+    let total = 0;
+    for (const e of entries) {
+      const target = nodePath.join(dir, e.name);
+      if (e.isDirectory()) {
+        if (e.name === 'test') { total += await this.treeBytes(target); }
+        continue;
+      }
+      total += await fs.stat(target).then(s => s.size).catch(() => 0);
+    }
+    return total;
+  }
+
+  /** 目录树内所有文件的字节和 */
+  private async treeBytes(dir: string): Promise<number> {
+    let entries: import('fs').Dirent[] = [];
+    try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { return 0; }
+    let total = 0;
+    for (const e of entries) {
+      const target = nodePath.join(dir, e.name);
+      if (e.isDirectory()) { total += await this.treeBytes(target); continue; }
+      total += await fs.stat(target).then(s => s.size).catch(() => 0);
+    }
+    return total;
+  }
+
+  /** `meta.json` 里该 pid 对应的题目条目 */
+  public async problemEntry(cid: string, pid: string): Promise<ProblemMetaEntry | undefined> {
+    const meta = await this.readContestMeta(cid);
+    return (meta?.problems ?? []).find(p => String(p.pid) === String(pid));
   }
 
   /** 回写 meta 的同步信息（题目数量 / 时间），不覆盖已有标题 */
@@ -509,11 +649,35 @@ export class CacheStore {
   // 题目页（原始 HTML）
   // ============================================================
 
+  /**
+   * 读取题目页原始 HTML（路径经 `meta.json` 的 pid → 目录映射解析）。
+   *
+   * 读到之后还要**核对标题**：题集被重排过时，同一序号上的题目换了人，而缓存是按序号
+   * 写入的，目录里可能留着**别人的题面**。对不上就当作未命中（返回 `undefined`），
+   * 上层会重新联网拉取并覆盖。题面自带题名，所以不需要额外的身份文件。
+   */
   public async readProblemHtml(cid: string, pid: string, opts?: { allowStale?: boolean }):
     Promise<string | undefined> {
     const paths = await this.resolveContestDir(cid);
     if (!paths) { return undefined; }
-    return this.readCachedText(paths.problemHtml(pid), opts);
+    const html = await this.readCachedText(paths.problemHtml(pid), opts);
+    if (html === undefined) { return undefined; }
+    return (await this.isOwnProblem(cid, pid, html)) ? html : undefined;
+  }
+
+  /**
+   * 目录里的题面是不是这道题的。
+   *
+   * 判据是**标题比较键**（剥掉「问题 X: 」位置前缀再压平）：题目页里写着题名，
+   * `meta.json` 里也记着题名，两者对不上说明这份缓存属于别的题。任一侧拿不到题名
+   * （页面没有标题、索引里没有这条记录）时放行 —— 无法判定就不误伤。
+   */
+  private async isOwnProblem(cid: string, pid: string, html: string): Promise<boolean> {
+    const entry = await this.problemEntry(cid, pid);
+    const want = nameKey(entry?.title);
+    if (!want) { return true; }
+    const got = nameKey(firstHeading(html));
+    return !got || got === want;
   }
 
   public async writeProblemHtml(cid: string, pid: string, html: string): Promise<void> {
@@ -524,8 +688,7 @@ export class CacheStore {
   /** 题目页是否已有原始 HTML（不看新鲜度；初始化用它做「增量补齐」判定） */
   public async hasProblemHtml(cid: string, pid: string): Promise<boolean> {
     const paths = await this.resolveContestDir(cid);
-    if (!paths) { return false; }
-    return this.exists(paths.problemHtml(pid));
+    return paths ? this.exists(paths.problemHtml(pid)) : false;
   }
 
   /** 题目页缓存状态（供「更新于 X 分钟前」与重访决策使用） */
@@ -743,6 +906,255 @@ export class CacheStore {
     await walk(dir, false);
     return { dataBytes, userBytes };
   }
+}
+
+// ============================================================
+// 题目身份与对齐（纯函数，不碰 IO）
+// ============================================================
+
+/** 站点的题目列表项（`utils/parser.ts` 的解析产物） */
+export interface ProblemLike {
+  pid: string;
+  title: string;
+  globalId?: string;
+}
+
+/** `meta.json.problems` 里的一项 —— 目录归属的唯一来源 */
+export interface AlignEntry {
+  /** 稳定身份：`g:<全局题号>` / `t:<题名比较键>` */
+  identity: string;
+  /** 站点全局题号（身份的来源，展示 / 追溯用） */
+  globalId?: string;
+  /** 当前在比赛内的序号（**会随题集变动**，只用于请求与展示） */
+  pid: string;
+  /** 当前序号对应的字母（展示用） */
+  letter: string;
+  /** 题目目录名（首次落盘后不再变化） */
+  dir: string;
+  /** 题名（已剥掉「问题 X: 」位置前缀） */
+  title: string;
+}
+
+/**
+ * 可作为「上一次的映射」输入的最小形状（`meta.json.problems` 的历史数据）。
+ *
+ * `identity` 允许缺失 —— 布局 v3 之前的条目没有这个字段，对齐时按目录名 / 题名兜底匹配。
+ */
+export interface PrevEntry {
+  identity?: string;
+  globalId?: string;
+  pid: string;
+  title: string;
+  dir: string;
+}
+
+/** 对齐结果 */
+export interface AlignPlan {
+  /** 当前列表对应的完整条目（已钉住各自目录） */
+  entries: AlignEntry[];
+  /** 站点上新增、本地还没有目录的题 */
+  added: AlignEntry[];
+  /** 站点上已消失、但目录被保留的题（用户源码 / 测试历史不可再生） */
+  orphans: Array<{ dir: string; title?: string }>;
+  /** 序号发生变化的题（题集被插队 / 删除的痕迹，供通知文案使用） */
+  moved: AlignEntry[];
+  /** 命中方式统计，便于诊断 */
+  matchedBy: { globalId: number; title: number; position: number; fresh: number };
+}
+
+/**
+ * 由题目信息推导身份。
+ *
+ * 优先级：全局题号 → **目录名里的题名** → 题名字段。
+ *
+ * 中间那一级是给旧数据（布局 v2 及更早）用的：旧条目的 `title` 会被后来的题改写
+ * （同一序号换了人时题名一起被覆盖），而**目录名不会** —— 它是建目录那一刻定下的，
+ * 之后只增不改。所以判"这个目录里装的是谁"要看目录名，不能看 `title`。
+ */
+export function problemIdentity(src: { globalId?: string; title?: string; dir?: string }): string {
+  const g = (src.globalId || '').trim();
+  if (/^\d+$/.test(g)) { return `g:${g}`; }
+  const fromDir = src.dir ? nameKey(nameFromDir(src.dir)) : '';
+  if (fromDir && !/^\d+$/.test(fromDir)) { return `t:${fromDir}`; }
+  const k = nameKey(src.title);
+  return `t:${k || slugify(src.title || '', 40) || 'unknown'}`;
+}
+
+/** 目录名 → 题名（剥掉目录名的题号前缀，再剥掉题目自带的「问题 X: 」位置前缀） */
+function nameFromDir(dir: string): string {
+  return (dir || '')
+    .replace(/^[A-Za-z]{1,3}-/, '')
+    .replace(/^问题-[A-Za-z]{1,3}-/, '');
+}
+
+/** 位置序号 → 展示用字母（0→A、25→Z、26→AA） */
+export function letterOf(pid: string | number): string {
+  const n = typeof pid === 'number' ? pid : parseInt(String(pid), 10);
+  if (!Number.isFinite(n) || n < 0) { return '?'; }
+  let s = '';
+  let num = Math.floor(n);
+  do {
+    s = String.fromCharCode(65 + (num % 26)) + s;
+    num = Math.floor(num / 26) - 1;
+  } while (num >= 0);
+  return s;
+}
+
+/** 题目列表项 → 条目骨架（`dir` 用身份推导，匹配到旧条目时会沿用旧 `dir`） */
+export function entryOf(p: ProblemLike): AlignEntry {
+  const identity = problemIdentity(p);
+  const title = problemName(p.title) || p.title || '';
+  return {
+    identity,
+    ...(p.globalId ? { globalId: String(p.globalId) } : {}),
+    pid: String(p.pid),
+    letter: letterOf(p.pid),
+    dir: problemDirName(identity, title),
+    title,
+  };
+}
+
+/**
+ * 按身份对齐：把「站点当前的题目列表」与「本地已有的目录」对上。
+ *
+ * 匹配顺序（逐级降级，越靠前越可信）：
+ *   1. 全局题号相同 —— 题目的真实身份（插队 / 删除 / 换位都不受影响）
+ *   2. 题名相同 —— 覆盖「本地是旧数据、压根没记全局题号」的历史目录
+ *      （题名取自目录名，见 {@link problemIdentity}）
+ *   3. 位置配对 —— 两侧剩余数量相等时按序号一一对应（题名被改、内容被替换）
+ * 前两轮都匹配不上的，才按第 3 轮处理；数量不等则如实认作「新增」与「消失」。
+ *
+ * 已匹配的题目**一律沿用旧目录名**（目录名定稿后不再变化），只有新增题目才新起目录。
+ *
+ * @param prev 旧映射。**顺序有意义**：同一道题对应多个目录时，排在前面的胜出，
+ *             调用方按内容分量排序（见 `CacheStore.orderByContent`）。
+ */
+export function alignProblems(prev: PrevEntry[], list: ProblemLike[]): AlignPlan {
+  const items = list.map(entryOf);
+  const matchedBy = { globalId: 0, title: 0, position: 0, fresh: 0 };
+
+  const usedPrev = new Set<number>();
+  /** 每个列表项命中的旧条目下标（新题为 undefined） */
+  const hitOf: Array<number | undefined> = items.map(() => undefined);
+
+  // 1) 全局题号
+  const byGlobalId = new Map<string, number>();
+  prev.forEach((e, i) => {
+    const g = (e.globalId || '').trim();
+    if (g && !byGlobalId.has(g)) { byGlobalId.set(g, i); }
+  });
+  items.forEach((it, i) => {
+    const g = (it.globalId || '').trim();
+    if (!g) { return; }
+    const j = byGlobalId.get(g);
+    if (j !== undefined && !usedPrev.has(j)) {
+      usedPrev.add(j); hitOf[i] = j; matchedBy.globalId += 1;
+    }
+  });
+
+  // 2) 题名（旧数据没有全局题号时的主要依据）
+  const byName = new Map<string, number>();
+  prev.forEach((e, i) => {
+    for (const k of entryKeys(e)) {
+      if (!byName.has(k)) { byName.set(k, i); }
+    }
+  });
+  items.forEach((it, i) => {
+    if (hitOf[i] !== undefined) { return; }
+    const k = nameKey(it.title);
+    if (!k) { return; }
+    const j = byName.get(k);
+    if (j !== undefined && !usedPrev.has(j)) {
+      usedPrev.add(j); hitOf[i] = j; matchedBy.title += 1;
+    }
+  });
+
+  // 3) 位置配对：仅当两侧剩余数量相等（既不是插入也不是删除）
+  const restItems = items.map((it, i) => ({ it, i })).filter(x => hitOf[x.i] === undefined);
+  const restPrev = prev.map((e, j) => ({ e, j })).filter(x => !usedPrev.has(x.j));
+  if (restItems.length > 0 && restItems.length === restPrev.length) {
+    const prevByPid = new Map(restPrev.map(x => [String(x.e.pid), x] as const));
+    for (const { it, i } of restItems) {
+      const hit = prevByPid.get(String(it.pid));
+      if (!hit) { continue; }
+      usedPrev.add(hit.j); hitOf[i] = hit.j; matchedBy.position += 1;
+    }
+  }
+
+  // 仍未匹配的列表项 = 新题
+  const entries: AlignEntry[] = [];
+  const added: AlignEntry[] = [];
+  const takenDirs = new Set(prev.filter((_, j) => usedPrev.has(j)).map(e => e.dir));
+  items.forEach((it, i) => {
+    const j = hitOf[i];
+    if (j !== undefined) { entries.push(keepDir(prev[j], it)); return; }
+    matchedBy.fresh += 1;
+    const fresh = { ...it, dir: uniqueProblemDir(it.dir, takenDirs) };
+    takenDirs.add(fresh.dir);
+    entries.push(fresh);
+    added.push(fresh);
+  });
+
+  // 未被认领的旧条目 = 站点上已消失（目录保留）
+  const orphans = prev
+    .filter((_, j) => !usedPrev.has(j))
+    .map(e => ({ dir: e.dir, ...(nameKey(e.title) ? { title: problemName(e.title) } : {}) }));
+
+  // 序号变了的题：题集被插队 / 删除的痕迹
+  const moved = entries.filter((e, i) => {
+    const j = hitOf[i];
+    return j !== undefined && String(prev[j].pid) !== String(e.pid);
+  });
+
+  entries.sort((a, b) => Number(a.pid) - Number(b.pid));
+  return { entries, added, orphans, moved, matchedBy };
+}
+
+/** 旧条目的匹配键：目录名里的题名优先（不会被后来的题改名覆盖），再补题名字段 */
+function entryKeys(e: PrevEntry): string[] {
+  const out: string[] = [];
+  const a = nameKey(nameFromDir(e.dir));
+  const b = nameKey(e.title);
+  if (a) { out.push(a); }
+  if (b && b !== a) { out.push(b); }
+  return out;
+}
+
+/**
+ * 沿用旧目录名，只刷新位置 / 题名 / 全局题号。
+ *
+ * 身份以**本次列表**为准（它带全局题号）；列表这次没给出全局题号时，沿用旧条目
+ * 记下的那个（`g:` 形式比题名兜底更可靠）。
+ */
+function keepDir(old: PrevEntry, it: AlignEntry): AlignEntry {
+  const oldG = (old.identity || '').startsWith('g:') ? old.identity : undefined;
+  return {
+    ...it,
+    dir: old.dir,
+    identity: it.identity.startsWith('g:') ? it.identity : (oldG ?? it.identity),
+    ...(it.globalId ? { globalId: it.globalId } : (old.globalId ? { globalId: old.globalId } : {})),
+  };
+}
+
+/** 目标目录名已被占用时加后缀（同题重名，极少见） */
+export function uniqueProblemDir(dir: string, taken: Set<string>): string {
+  if (!taken.has(dir)) { return dir; }
+  for (let i = 2; i < 100; i += 1) {
+    const candidate = `${dir}~${i}`;
+    if (!taken.has(candidate)) { return candidate; }
+  }
+  return `${dir}~x`;
+}
+
+/** 页面 HTML 里的第一个标题（题目页的题名所在）——去掉标签与多余空白 */
+function firstHeading(html: string): string {
+  const m = /<h3[^>]*>([\s\S]*?)<\/h3>/i.exec(html || '');
+  if (!m) { return ''; }
+  return m[1]
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 /** pid → 目录名 映射（`meta.json.problems` 的唯一消费点） */

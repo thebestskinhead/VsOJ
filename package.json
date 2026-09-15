@@ -553,6 +553,7 @@
     "smoke:site": "npm run compile && node scripts/smoke-site.js",
     "test:localize": "npm run compile && node test/localize.test.js",
     "test:init": "npm run compile && node test/init.test.js",
+    "test:sync": "npm run compile && node test/sync.test.js",
     "test:guard": "npm run compile && node test/workspace-guard.test.js",
     "test:tree": "npm run compile && node test/project-tree.test.js",
     "test:opensource": "npm run compile && node test/open-source.test.js",

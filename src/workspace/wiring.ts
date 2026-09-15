@@ -11,7 +11,6 @@
 import { CacheStore } from '../cache/store';
 import { ProblemService } from '../api/problem';
 import { parseProblemDetail } from '../utils/parser';
-import { numToLetter } from '../utils/slug';
 import { getSourceFileName, isOfflineMode } from '../utils/config';
 import { ProblemInitDeps } from './initializer';
 
@@ -67,7 +66,7 @@ export function buildInitDeps(opts: BuildInitDepsOptions): ProblemInitDeps {
     saveProblemHtml: async (pid, html) => { await store.writeProblemHtml(cid, pid, html); },
 
     parseDetail: (html) => parseProblemDetail(html),
-    registerProblem: (entry) => store.registerProblem(cid, entry),
+    registerProblem: async (entry) => { await store.registerProblem(cid, entry); },
 
     // ---- 样例 ----
     readSamples: (pid) => store.readSamples(cid, pid),
@@ -94,7 +93,6 @@ export function buildInitDeps(opts: BuildInitDepsOptions): ProblemInitDeps {
     // ---- 环境 ----
     isOffline: () => isOfflineMode(),
     toError,
-    letterOf: (pid) => numToLetter(parseInt(pid, 10)),
     log,
   };
 }

@@ -2,7 +2,7 @@ import { apiClient } from './client';
 import { parseContestList, parseProblemList } from '../utils/parser';
 import { Contest, ProblemBrief, Pagination } from '../types';
 import { AuthService } from './auth';
-import { CacheStore } from '../cache/store';
+import { CacheStore, AlignPlan } from '../cache/store';
 
 /**
  * 比赛模块 — 比赛列表 / 题目列表。
@@ -12,6 +12,9 @@ import { CacheStore } from '../cache/store';
  * 过期或 `force` 才联网，并**原样落盘原始 HTML**。
  *
  * `oj.cache.offline = true` 时完全跳过网络，只能吃缓存。
+ *
+ * 题目列表还有一个职责：**每次拿到列表都按身份重建题目索引**
+ * （{@link syncIndex}）—— 这是「同一道题始终对应同一个目录」的唯一保证。
  */
 
 export interface FetchOptions {
@@ -19,15 +22,28 @@ export interface FetchOptions {
   force?: boolean;
 }
 
+/** 上层钩子 */
+export interface ContestServiceHooks {
+  /**
+   * 题目索引按身份对齐后回调。
+   *
+   * 用途是**提示题集变动**：老师往中间插题后，后面所有题目的序号都会后移，
+   * 侧边栏里的字母也跟着变；不明说会让人以为题目被换掉了。
+   */
+  onIndexSynced?: (cid: string, plan: AlignPlan) => void;
+}
+
 const EMPTY_PAGINATION: Pagination = { current: 1, total: 1, pages: [], first: null, last: null };
 
 export class ContestService {
   private auth: AuthService;
   private store?: CacheStore;
+  private hooks?: ContestServiceHooks;
 
-  constructor(auth: AuthService, store?: CacheStore) {
+  constructor(auth: AuthService, store?: CacheStore, hooks?: ContestServiceHooks) {
     this.auth = auth;
     this.store = store;
+    this.hooks = hooks;
   }
 
   /** 获取比赛列表 */
@@ -77,6 +93,26 @@ export class ContestService {
     }
   }
 
+  /**
+   * 把最新题目列表同步进题目索引。
+   *
+   * 站点会往题集中间插题 / 删题，之后同一序号上的题目就换人了。索引按**身份**
+   * （全局题号，退化到题名）重排，保证每道题始终指向它自己的目录；新题拿新目录，
+   * 站点上消失的题保留目录（用户源码不可再生）。详见 `cache/store.ts`。
+   *
+   * 列表本身为空时不动索引 —— 那通常是受限页或解析失败，不能据此判定"题目都没了"。
+   */
+  private async syncIndex(cid: string, problems: ProblemBrief[]): Promise<void> {
+    if (!this.store || problems.length === 0) { return; }
+    try {
+      const plan = await this.store.syncProblemIndex(cid, problems);
+      this.hooks?.onIndexSynced?.(cid, plan);
+    } catch (e) {
+      // 索引对齐失败不该阻断看题：退化成"用现状"，题面身份校验仍会兜住错配
+      console.warn('[OJ] 题目索引对齐失败:', e);
+    }
+  }
+
   /** 获取某比赛下的题目列表 */
   async fetchProblemList(cid: string, opts: FetchOptions = {}):
     Promise<{ title: string; problems: ProblemBrief[] }> {
@@ -91,6 +127,7 @@ export class ContestService {
         // 在线情况下回退到网络重新确认
         if (parsed.problems.length > 0 || offline) {
           parsed.problems.forEach(p => { p.cid = cid; });
+          await this.syncIndex(cid, parsed.problems);
           return parsed;
         }
       }
@@ -128,6 +165,9 @@ export class ContestService {
 
       const result = parseProblemList(html);
       result.problems.forEach(p => { p.cid = cid; });
+
+      // 索引先按身份对齐，再落盘：目录名不随序号漂移
+      await this.syncIndex(cid, result.problems);
 
       // 落盘原始 HTML；比赛标题只在这里能拿到，因此目录名在此定稿
       await this.store?.writeContestPageHtml(cid, html, result.title);
