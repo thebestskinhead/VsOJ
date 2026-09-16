@@ -192,10 +192,11 @@
 | **S7.1** | 取数统一过访问闸门（未登录只走登录提示、免登录读缓存只由强制离线开关授权、状态一变即收口已渲染内容） | `src/session/access.ts`、`src/api/*`、`test/{access,cache-gate}.test.js` | ✅ |
 | **S7.2** | MCP 补测试用例工具 + 编译 / 测试支持指定源文件 | 新增 `add_test_case`（写 `samples/N.in` / `N.out`）；`compile_problem` / `run_local_test` 加 `source` 参数（默认 `main.cpp`，只接受题目目录内的文件名） | ✅ |
 | **S7.3** | 写盘确认改为「以比赛目录是否存在为准」+ 确认框居中 | 删除 `InitConfirmations`（同意状态不再单独存储）；需新建根目录时每次都问，目录存在即视为已同意；`askInitConfirm` 改 `modal: true`，按钮简化为两个 | ✅ |
+| **S7.4** | 比赛根目录只由「同意初始化」创建（修 S7.3 判据失灵） | 缓存写穿（`write*Html` / `writeSamples` / `writeProblemAsset`）与 `syncProblemIndex` 一律先 `resolveContestDir`，拿不到就跳过、不再顺手建目录；`writeContestPageHtml` 保留「目录已存在时定稿标题」 | ✅ |
 
 ### 测试与验证
 
-`npm test` 一次性跑完全部套件（**32 套件 / 2502 项断言**），全部脱离 VS Code 运行时
+`npm test` 一次性跑完全部套件（**32 套件 / 2509 项断言**），全部脱离 VS Code 运行时
 （`vscode` 模块桩 + 本地 HTTP 服务器）。**引擎套件不 mock 编译与执行** ——
 用本机真实的 g++ 编译真实源码、跑真实样例、比真实字节
 （找不到编译器时该组用例降级为 skip 并说明，不伪装成通过）。
@@ -206,7 +207,7 @@
 | `status-webview` | 148 | 提交结果页：结果码映射、轮询队列、注入转义、亮色、**首屏只赋值一次 `webview.html`** |
 | `access` | 166 | 访问闸门：登录态与离线的状态转换；未登录一律拒绝且零请求；离线仅强制开关授权读缓存；会话过期降级并广播；状态一变已渲染内容即收口（含后台刷新失效、只读预览随工作区变） |
 | `mcp-test-tools` | 113 | MCP 四工具（真 `McpToolHandler` + 真 g++）、`add_test_case` 落盘与回执、`source` 参数与路径安全、`get_current_problem` 的 `local` 段、读结果不重跑 |
-| `cache-layout` | 91 | 布局 v3、`<全局题号>-<标题>` 目录命名、幂等、重命名、索引兜底、多比赛隔离、slug 边界、清理语义 |
+| `cache-layout` | 98 | 布局 v3、`<全局题号>-<标题>` 目录命名、幂等、重命名、索引兜底、多比赛隔离、slug 边界、清理语义、**缓存写穿不建比赛目录** |
 | `toolchain-page` | 90 | 工具链配置页：模型组装、保存计划（部分覆盖 / 恢复默认 / 坏输入不落盘）、渲染转义、真落盘后引擎读回 |
 | `config-writer` | 85 | `planConfigWrite` 纯函数：键名容错、类型转换、错误拒绝落盘 |
 | `session` | 84 | 失效分类、登录页判定、意图重放与过期、保活时序与登录时的会话切换、对本地 HTTP 服务器端到端验证提交分类 |

@@ -30,6 +30,7 @@
 | S7.1 | 2026-09-16 | **取数统一过访问闸门**：新增 `src/session/access.ts`（登录态 / 离线裁决），未登录一律只走登录提示且零请求；免登录读缓存只由用户主动打开的强制离线开关授权；离线无缓存抛 `OfflineNoCacheError`；登录态 / 离线开关一变即收口已渲染内容 | `npm test` **32 套件 / 2481 项断言**全绿；`test:access` 166 项、`test:cache-gate` 80 项、`test:sync-stress` 717 项 |
 | S7.2 | 2026-09-16 | **MCP 补测试用例工具 + 指定编译文件**：新增 `add_test_case`（AI 自己往 `samples/` 写用例，不传序号则追加）；`compile_problem` / `run_local_test` 加 `source` 参数（默认 `main.cpp`，只接受题目目录内的文件名） | `npm test` **32 套件 / 2503 项断言**全绿；`test:mcp-test-tools` 91 → 113 项 |
 | S7.3 | 2026-09-16 | **写盘确认改判据 + 确认框居中**：写盘许可不再单独存状态，以「比赛目录是否存在」为准 —— 需要新建根目录时每次都问，目录建好即视为已同意；`InitConfirmations` 与「本次不再问」移除；`askInitConfirm` 改 `modal: true` | `npm test` **32 套件 / 2502 项断言**全绿；`test:workspace-guard` 79 项 |
+| S7.4 | 2026-09-16 | **修 S7.3 判据失灵**：比赛根目录只由「同意初始化」创建 —— 缓存写穿与 `syncProblemIndex` 不再顺手建目录（否则删掉目录后一次列表刷新就让它「复活」，再也不会被问）；代价是未初始化的比赛没有本地缓存 | `npm test` **32 套件 / 2509 项断言**全绿；`test:cache-layout` 91 → 98 项 |
 
 ---
 
@@ -697,6 +698,44 @@ MCP 那侧当时只有五个只读与配置类工具，缺的正是最后一环�
 **验证**：`test/workspace-guard.test.js` 80 → **79 项**（删掉 `InitConfirmations` 的用例，
 新增「目录不存在 → 每次都问 / 目录存在 → 不再问 / 不再导出 InitConfirmations / 无 dismissAction」）。
 `npm test` → **32 套件 / 2502 项断言**全绿。
+
+---
+
+## S7.4 — 比赛根目录只由「同意初始化」创建（2026-09-16）
+
+**现象（用户报的）**：把 `<cid>-<标题>/` 整个删掉之后，再打开题目**不再询问**是否初始化 ——
+S7.3 那条「目录存在 = 已同意」的判据失灵了。
+
+**根因**：比赛目录原来有**三条**创建路径，而 S7.3 只把判据换成了「目录是否存在」：
+
+1. `ProblemInitializer` → `registerProblem` → `ensureContestDir`（**用户同意后**，应该建）；
+2. `CacheStore.syncProblemIndex()` 首行就是 `ensureContestDir(cid, '')` ——
+   而 `fetchProblemList` 每次拿到题目列表都会调它（进比赛、刷新列表都会）；
+3. 缓存写穿：`writeContestPageHtml` / `writeProblemHtml` / `writeStatusHtml` /
+   `writeSamples` / `writeProblemAsset` 全都从 `ensureContestDir` 起手 ——
+   只要联网看过一次题，目录就被建出来了。
+
+于是删掉目录后，**任何一次列表刷新或看题都会把目录「复活」**，用户再也等不到那次确认；
+顺带也让确认框里「选『只看题面』不会写任何文件」那句文案名不副实。
+
+**做了什么**：把「比赛根目录」的创建收敛为**唯一入口** —— 用户同意初始化那条路径
+（`initializer` → `registerProblem` → `ensureContestDir`）：
+
+- `syncProblemIndex`：目录不存在 → 返回**空计划**（不建目录、不写 meta）；
+- 五个缓存写穿入口：改为 `resolveContestDir`，拿不到就直接 `return`（不写、也不建目录）；
+- `writeContestPageHtml` 仍负责「目录名定稿」：目录已存在且 `pendingTitle` 为真时走
+  `finalizeContestTitle`（只重命名，不创造目录）；
+- `ensureContestDir` 的注释写明它是唯一创建入口、只允许被同意路径调用；
+- 列表缓存（`.vsoj/lists/`）不受影响（与比赛目录无关）。
+
+**代价（有意为之）**：没同意初始化的比赛**不再有本地缓存** —— 离线看不了、每次都要联网。
+这是「写盘要同意」（D21）的必然结果，也让「只看题面 = 不写任何文件」真的成立。
+
+**验证**：`test/cache-layout.test.js` 新增 `[10.5]`（91 → **98 项**）：目录不存在时五种写入
+都不落盘且不建目录、`syncProblemIndex` 返回空计划、同意后缓存恢复、
+**删掉目录后重新变回「未初始化」**。其余套件里「把写缓存当作建目录手段」的铺数据步骤
+改为显式 `ensureContestDir(...)`（等价于用户点过「初始化并打开」）：
+`cache-gate` / `access` / `cache-layout`。`npm test` → **32 套件 / 2509 项断言**全绿。
 
 ---
 

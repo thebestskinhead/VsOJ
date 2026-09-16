@@ -107,9 +107,11 @@ const submits = new SubmitService({ fetchCsrfToken: async () => 'tok' }, gate, s
 
 (async () => {
   // ─────────── 铺初始数据 ───────────
-  // 顺序按真实流程走：比赛页落盘（目录名定稿）→ 拉一次题目列表（索引定稿）→
-  // 再写题目页与状态页。反过来写会把题面落到「还没有索引时的数字 pid 目录」里，
-  // 索引一建就换目录，题面随之失联。
+  // 顺序按真实流程走：同意初始化（建目录）→ 比赛页落盘（目录名定稿）→
+  // 拉一次题目列表（索引定稿）→ 再写题目页与状态页。反过来写会把题面落到
+  // 「还没有索引时的数字 pid 目录」里，索引一建就换目录，题面随之失联。
+  // 注：比赛目录只有「用户同意初始化」才会建，缓存写穿不再顺手建目录。
+  await store.ensureContestDir(CID, '');
   await store.writeContestPageHtml(CID, PROBLEM_LIST_HTML, '数据结构课');
   resetNet(() => { throw new Error('不该联网'); });
   await contest.fetchProblemList(CID);

@@ -47,6 +47,9 @@ const hiddenDirs = () => fs.readdirSync(WORKSPACE).filter(n => n.startsWith('.')
   console.log('内部数据根:', layout.rootDir, '| 工作区级:', layout.inWorkspace);
 
   console.log('\n[1] 无标题写入（模拟直接打开题目页）');
+  // 新语义：比赛根目录只由「用户同意初始化」创建（缓存写穿不再顺手建目录），
+  // 所以这里先显式建目录，再写缓存。
+  await store.ensureContestDir('3772', '');
   await store.writeStatusHtml('3772', '<html>status</html>');
   await store.writeProblemHtml('3772', '0', '<html>page-0</html>');
   const p1 = await store.resolveContestDir('3772');
@@ -159,6 +162,7 @@ const hiddenDirs = () => fs.readdirSync(WORKSPACE).filter(n => n.startsWith('.')
     path.basename((await store.resolveContestDir('3772')).problemDir('0')), '1722-A-+-B');
 
   console.log('\n[10] 多比赛隔离');
+  await store.ensureContestDir('4001', '');
   await store.writeContestPageHtml('4001', '<html>c4001</html>', '秋季赛');
   await store.writeProblemHtml('4001', '0', '<html>p4001</html>');
   const names2 = visibleDirs();
@@ -167,6 +171,35 @@ const hiddenDirs = () => fs.readdirSync(WORKSPACE).filter(n => n.startsWith('.')
   check('4001 目录名只含比赛标题', names2.includes('4001-秋季赛'), true);
   check('互不串味', await store.readProblemHtml('4001', '0'), '<html>p4001</html>');
   check('3772 的题 0 未被污染', await store.readProblemHtml('3772', '0'), undefined); // 已过期
+
+  console.log('\n[10.5] 缓存写穿不建比赛目录（目录只由「同意初始化」创建）');
+  {
+    const cid = '7001';
+    // 目录不存在时：所有缓存写入都跳过，且**不建目录**
+    await store.writeContestPageHtml(cid, '<html>c</html>', '不该建目录');
+    await store.writeProblemHtml(cid, '0', '<html>p</html>');
+    await store.writeStatusHtml(cid, '<html>s</html>');
+    await store.writeSamples(cid, '0', [{ input: '1\n', output: '1\n' }]);
+    check('没有生成 <cid>-<标题> 目录',
+      fs.existsSync(path.join(WORKSPACE, `${cid}-不该建目录`)), false);
+    check('也没有生成纯 <cid> 目录', fs.existsSync(path.join(WORKSPACE, cid)), false);
+    check('resolveContestDir 仍为 undefined', await store.resolveContestDir(cid), undefined);
+
+    // 索引同步同样不建目录 —— 否则删掉目录后，一次题目列表刷新就会让它「复活」
+    const plan = await store.syncProblemIndex(cid, [{ pid: '0', title: '甲' }]);
+    check('目录不存在 → 空计划', [plan.entries.length, plan.added.length], [0, 0]);
+    check('同步后依旧未初始化', await store.readContestMeta(cid), undefined);
+
+    // 同意初始化（建目录）之后，缓存写穿照常工作
+    await store.ensureContestDir(cid, '');
+    await store.writeProblemHtml(cid, '0', '<html>p</html>');
+    check('目录已存在 → 缓存正常落盘', await store.readProblemHtml(cid, '0'), '<html>p</html>');
+
+    // 删掉整个比赛目录 → 又回到「需要重新征求同意」
+    const dir = (await store.resolveContestDir(cid)).dir;
+    fs.rmSync(dir, { recursive: true, force: true });
+    check('目录删掉后 → 未初始化（下次打开会重新问）', await store.readContestMeta(cid), undefined);
+  }
 
   console.log('\n[11] slug 与路径边界');
   check('slugify 非法字符', P.slugify('a<b>:c"/d\\e|f?g*h', 40), 'a-b-c-d-e-f-g-h');

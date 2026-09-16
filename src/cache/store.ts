@@ -337,6 +337,12 @@ export class CacheStore {
   /**
    * 初始化（或复用）比赛目录，并登记索引。
    *
+   * **它是「比赛根目录」唯一的创建入口**，因此只能由「用户已同意写盘」的路径调用
+   * （`initializer` → `registerProblem`）。缓存写穿（`write*Html` / `writeSamples` /
+   * `writeProblemAsset`）与索引同步（`syncProblemIndex`）一律先 `resolveContestDir`，
+   * 拿不到就跳过 —— 它们顺手建目录会让「目录存在 = 已同意初始化」这条判据失真，
+   * 也会让「删掉目录后重新征求同意」永远不再发生。
+   *
    * **目录名一旦确定不再变化**：首次落盘时用 `<cid>-<slug(标题)>`；
    * 若首次落盘时尚无标题，则先建为纯 `<cid>` 目录并标记 `pendingTitle`，
    * 待后续拿到标题时由 {@link finalizeContestTitle} 重命名一次。
@@ -549,6 +555,19 @@ export class CacheStore {
    * 幂等：列表没变时结果逐字段相同，只刷新 `lastSyncAt`。
    */
   public async syncProblemIndex(cid: string, list: ProblemLike[]): Promise<AlignPlan> {
+    // 比赛目录还没建 → **什么都不做**（返回空计划，不建目录、不写 meta）。
+    //
+    // 这里原先用 `ensureContestDir()`，会在用户没同意初始化的情况下把比赛根目录建出来：
+    // 既绕过了 D21 的写盘同意，又让「目录存在 = 已同意过」这条判据失真 ——
+    // 删掉目录之后，任何一次题目列表刷新都会让目录「复活」，用户再也不会被问一次。
+    const existing = await this.resolveContestDir(cid);
+    if (!existing) {
+      return {
+        entries: [], added: [], orphans: [], moved: [],
+        matchedBy: { globalId: 0, title: 0, position: 0, fresh: 0 },
+      };
+    }
+
     const paths = await this.ensureContestDir(cid, '');
     const meta = (await this.readJson<ContestMeta>(paths.meta)) ?? {
       cid, title: '', baseUrl: getBaseUrl(),
@@ -694,7 +713,17 @@ export class CacheStore {
    * 因此这里是**唯一**能把目录名定稿的写入点（其余写入点一律传空标题以复用既有目录）。
    */
   public async writeContestPageHtml(cid: string, html: string, title?: string): Promise<void> {
-    const paths = await this.ensureContestDir(cid, title ?? '');
+    // 只写**已存在**的比赛目录：比赛根目录的创建是「用户同意初始化」的专属动作
+    // （`initializer` → `registerProblem` → `ensureContestDir`）。
+    // 缓存写穿顺手建目录，就等于替用户同意了写盘，还会让「目录存在 = 已同意」失真。
+    let paths = await this.resolveContestDir(cid);
+    if (!paths) { return; }
+
+    // 比赛标题只存在于比赛页里 → 目录名在这里定稿（仅在目录已是纯 `<cid>` 时重命名）
+    if (title) {
+      const meta = await this.readJson<ContestMeta>(paths.meta);
+      if (meta?.pendingTitle) { paths = await this.finalizeContestTitle(cid, title); }
+    }
     await this.writeCachedText(paths.contestHtml, html);
   }
 
@@ -741,7 +770,9 @@ export class CacheStore {
   }
 
   public async writeProblemHtml(cid: string, pid: string, html: string): Promise<void> {
-    const paths = await this.ensureContestDir(cid, '');
+    // 只写已存在的比赛目录（理由见 `writeContestPageHtml`）
+    const paths = await this.resolveContestDir(cid);
+    if (!paths) { return; }
     await this.writeCachedText(paths.problemHtml(pid), html);
   }
 
@@ -769,7 +800,9 @@ export class CacheStore {
   }
 
   public async writeStatusHtml(cid: string, html: string): Promise<void> {
-    const paths = await this.ensureContestDir(cid, '');
+    // 只写已存在的比赛目录（理由见 `writeContestPageHtml`）
+    const paths = await this.resolveContestDir(cid);
+    if (!paths) { return; }
     await this.writeCachedText(paths.statusHtml, html);
   }
 
@@ -796,7 +829,9 @@ export class CacheStore {
 
   /** 写入样例数据集。站点固定单组样例，因此写为 1.in / 1.out；序号保留以兼容未来多组 */
   public async writeSamples(cid: string, pid: string, samples: Array<{ index?: number; input: string; output: string }>): Promise<void> {
-    const paths = await this.ensureContestDir(cid, '');
+    // 只写已存在的比赛目录（理由见 `writeContestPageHtml`）
+    const paths = await this.resolveContestDir(cid);
+    if (!paths) { return; }
     const dir = paths.samplesDir(pid);
     await this.ensureDir(dir);
     if (!this.enabled) { return; }
@@ -845,7 +880,9 @@ export class CacheStore {
    * 因此渲染时用原 URL 即可反查本地文件，无需任何索引。
    */
   public async writeProblemAsset(cid: string, pid: string, url: string, data: Buffer | Uint8Array): Promise<void> {
-    const paths = await this.ensureContestDir(cid, '');
+    // 只写已存在的比赛目录（理由见 `writeContestPageHtml`）
+    const paths = await this.resolveContestDir(cid);
+    if (!paths) { return; }
     await this.writeProblemAssetAt(paths.problemAssetsDir(pid), url, data);
   }
 

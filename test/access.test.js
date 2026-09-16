@@ -354,7 +354,10 @@ async function attempt(fn) {
   useGate(gateOf({}));
 
   // 先把缓存铺满（模拟「用户此前登录过、本地已有全部缓存」）——
-  // 这正是 bug 的场景：登出之后侧边栏还照常显示上次的题目列表
+  // 这正是 bug 的场景：登出之后侧边栏还照常显示上次的题目列表。
+  // 注意：缓存只在**已同意初始化**（比赛目录已存在）时落盘，
+  // 所以先显式建目录，等价于用户点过「初始化并打开」。
+  await store.ensureContestDir(PUBLIC_CID, '');
   await store.writeContestPageHtml(PUBLIC_CID, PROBLEM_LIST_HTML, '数据结构课');
   await store.writeProblemHtml(PUBLIC_CID, '0', problemPage('甲', '读两个数。'));
   await store.writeContestListHtml(1, undefined, CONTEST_LIST_HTML);
