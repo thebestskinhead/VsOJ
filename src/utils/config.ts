@@ -60,15 +60,15 @@ export function getCacheTtlMs(): number {
 }
 
 /**
- * 「异步刷新」阈值（毫秒）——重访题目页时，超过该年龄才在后台重新拉取。
+ * 「异步刷新」阈值（毫秒）——重访题面时，超过该年龄才在后台重新拉取。
  *
  * 与 {@link getCacheTtlMs} 的分工：
  *  - `ttlSeconds`（默认 180s）管**同步读**：命中且新鲜就直接用，不发起任何请求
- *    （用于比赛列表 / 题目列表这类轻量数据）
+ *    （用于比赛列表 / 题目列表 / 提交状态这类轻量数据）
  *  - `staleSeconds`（默认 900s）管**异步刷**：先渲染缓存，超过该年龄才后台刷新
- *    （用于题目详情）
+ *    （用于题面）
  *
- * 两者不冲突：题目详情页不使用 `ttlSeconds`。
+ * 两者不冲突：题面不使用 `ttlSeconds`。
  */
 export function getStaleTtlMs(): number {
   const sec = getConfig().get<number>('cache.staleSeconds', 900);

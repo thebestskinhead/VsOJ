@@ -1,10 +1,26 @@
 import { apiClient } from './client';
 import { parseProblemDetail } from '../utils/parser';
 import { ProblemDetail } from '../types';
-import { getBaseUrl } from '../utils/config';
+import { getBaseUrl, getStaleTtlMs } from '../utils/config';
 import { escapeHtml } from '../utils/format';
+import { CacheStore, OfflineNoCacheError } from '../cache/store';
+import { planRevisit } from '../cache/revalidate';
 
-/** 题目模块 — 题目详情获取与解析（渲染产物的构建也在此，历史原因） */
+/**
+ * 题目模块 — 题目详情获取与解析（渲染产物的构建也在此，历史原因）。
+ *
+ * ## 题面是**过缓存**的
+ *
+ * 本模块区分两类取数：
+ *
+ * - {@link ProblemService.fetchProblemHtml} —— **纯网络原语**，直连站点、不读不写缓存。
+ *   全插件只有刷新执行器（`cache/refresher.ts`）该用它，因为"刷新"的语义就是"绕过缓存"。
+ * - {@link ProblemService.loadProblemHtml} —— 闸门后的取数：命中缓存就零网络返回，
+ *   过期才在后台补拉一次，离线且无缓存则抛 {@link OfflineNoCacheError}。
+ *   凡是要**给用户或 AI 看题面**的地方都走这条（题目页、MCP 工具）。
+ *
+ * 这条分工不能含糊：一旦让 `fetchProblemHtml` 也去读缓存，刷新命令就会变成空操作。
+ */
 
 /** 题目页渲染选项 */
 export interface ProblemViewOptions {
@@ -16,12 +32,43 @@ export interface ProblemViewOptions {
   enableRefresh?: boolean;
 }
 
+/** 取到题面的同时说明它的来源与年龄 */
+export interface ProblemHtmlResult {
+  html: string;
+  /** `cache` = 本地命中（可能已过期，看 `ageMs`）；`network` = 本次联网取得 */
+  source: 'cache' | 'network';
+  /** 缓存年龄（毫秒）；联网取得时为 0 */
+  ageMs: number;
+  /** 是否已安排后台刷新（缓存过期且允许联网） */
+  refreshing: boolean;
+}
+
+/** 结构化详情 + 来源信息 */
+export interface ProblemDetailResult extends ProblemHtmlResult {
+  detail: ProblemDetail;
+}
+
+export interface ProblemLoadOptions {
+  /** 忽略缓存直接联网（用户显式刷新时用） */
+  force?: boolean;
+  /** 后台刷新完成后的回调；只有「缓存过期且允许联网」时才会触发 */
+  onRefreshed?: (html: string) => void;
+  log?: (msg: string) => void;
+}
+
 export class ProblemService {
+  private store?: CacheStore;
+
+  /** `store` 不传 = 没有缓存层（未接线 / 工作区外只读预览），闸门退化为直连站点 */
+  constructor(store?: CacheStore) {
+    this.store = store;
+  }
+
   /**
-   * 拉取题目页**原始 HTML**。
+   * 拉取题目页**原始 HTML**（直连站点，不读也不写缓存）。
    *
    * 缓存层保存的就是这份 HTML（见 `cache/paths.ts` 的「只存原始信息」原则），
-   * 因此这是拉取与落盘的共同入口。
+   * 因此这是拉取与落盘的共同入口 —— 也正因如此，它必须保持"纯粹"。
    */
   async fetchProblemHtml(cid: string, pid: string): Promise<string> {
     const response = await apiClient.get('/problem.php', {
@@ -31,23 +78,95 @@ export class ProblemService {
     return typeof response.data === 'string' ? response.data : '';
   }
 
-  /** 获取题目结构化数据（内存解析产物，不落盘） */
-  async fetchProblem(cid: string, pid: string): Promise<ProblemDetail> {
+  /**
+   * 过闸门取题面：命中缓存零网络返回，过期后台补拉，离线无缓存抛错。
+   *
+   * 后台刷新是 **fire-and-forget**：首屏用缓存渲染，新内容到了再由 `onRefreshed`
+   * 通知调用方按需替换（避免整页重绘打断阅读）。刷新失败不抛出 —— 缓存还在，
+   * 网络抖动不该让已经能看的内容变成错误页。
+   */
+  async loadProblemHtml(cid: string, pid: string, opts: ProblemLoadOptions = {}):
+    Promise<ProblemHtmlResult> {
+    const store = this.store;
+
+    if (!store) {
+      const html = await this.fetchProblemHtml(cid, pid);
+      return { html, source: 'network', ageMs: 0, refreshing: false };
+    }
+
+    const offline = store.offline;
+    const stat = await store.statProblemHtml(cid, pid);
+    const plan = planRevisit({
+      offline,
+      hasCache: stat.exists,
+      ageMs: stat.ageMs,
+      staleMs: getStaleTtlMs(),
+    });
+
+    // 1) 缓存路径：首屏绝不阻塞在网络
+    if (!opts.force && plan.source === 'cache') {
+      const html = await store.readProblemHtml(cid, pid, { allowStale: true });
+      // 读得到才算命中：文件可能属于别的题（题集重排留下的），此时按未命中处理
+      if (html !== undefined) {
+        if (plan.backgroundRefresh) {
+          opts.log?.(`[problem] 缓存已过期，后台刷新 ${pid}`);
+          void this.refreshInBackground(cid, pid, opts);
+        }
+        return {
+          html,
+          source: 'cache',
+          ageMs: stat.ageMs ?? 0,
+          refreshing: plan.backgroundRefresh,
+        };
+      }
+    }
+
+    // 2) 网络路径：离线到这里就是「拿不到」而不是「没有」，必须让上层能分辨
+    if (offline) {
+      throw new OfflineNoCacheError('题目内容');
+    }
+
+    const html = await this.fetchProblemHtml(cid, pid);
+    await store.writeProblemHtml(cid, pid, html);
+    return { html, source: 'network', ageMs: 0, refreshing: false };
+  }
+
+  /** 后台刷新：拉最新题面覆盖缓存（失败静默，缓存保留） */
+  private async refreshInBackground(cid: string, pid: string, opts: ProblemLoadOptions): Promise<void> {
     try {
       const html = await this.fetchProblemHtml(cid, pid);
-      const detail = parseProblemDetail(html);
-
-      if (!detail) {
-        throw new Error('无法解析题目内容');
-      }
-
-      detail.cid = cid;
-      detail.pid = pid;
-      return detail;
+      await this.store?.writeProblemHtml(cid, pid, html);
+      opts.onRefreshed?.(html);
     } catch (e: any) {
+      opts.log?.(`[problem] 后台刷新失败，保留缓存：${e?.message ?? e}`);
+    }
+  }
+
+  /** 获取题目结构化数据（内存解析产物，不落盘；题面走闸门） */
+  async fetchProblem(cid: string, pid: string, opts: ProblemLoadOptions = {}):
+    Promise<ProblemDetailResult> {
+    let html: string;
+    let source: 'cache' | 'network';
+    let ageMs: number;
+    let refreshing: boolean;
+
+    try {
+      ({ html, source, ageMs, refreshing } = await this.loadProblemHtml(cid, pid, opts));
+    } catch (e: any) {
+      // 闸门拒答原样上抛：调用方要能区分「离线拿不到」与「站点上没有」
+      if (e instanceof OfflineNoCacheError) { throw e; }
       console.error('[OJ] 题目详情加载失败:', e);
       throw new Error(`加载题目详情失败: ${e.message}`);
     }
+
+    const detail = parseProblemDetail(html);
+    if (!detail) {
+      throw new Error('加载题目详情失败: 无法解析题目内容');
+    }
+
+    detail.cid = cid;
+    detail.pid = pid;
+    return { detail, html, source, ageMs, refreshing };
   }
 
   /** 仅题目内容区（用于增量替换，不含信息栏与脚本） */

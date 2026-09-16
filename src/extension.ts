@@ -94,7 +94,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const contestService = new ContestService(auth, cache, {
     onIndexSynced: (cid, plan) => noteProblemShift(cid, plan),
   });
-  const problemService = new ProblemService();
+  const problemService = new ProblemService(cache);
   const submitService = new SubmitService(auth, cache);
 
   // 网络可达性（S4.2）— 判定口径：拿到 HTTP 响应即视为可达，
@@ -470,7 +470,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
    * 就地轮询 `status-ajax.php` 刷新（对齐站点 `auto_refresh.js`），不整页重载。
    */
   const statusWebview = new StatusWebview({
-    loadRecords: () => submitService.queryStatus(state.getStudentId() || '', state.getCurrentCid() || ''),
+    loadRecords: (opts) => submitService.queryStatus(
+      state.getStudentId() || '', state.getCurrentCid() || '', opts,
+    ),
     pollRow: (submitId) => submitService.fetchStatusAjax(submitId),
     loadDetail: (submitId, resultCode) => submitService.fetchJudgementDetail(submitId, resultCode),
     pollIntervalMs: () => getStatusPollInterval(),
@@ -1115,7 +1117,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         if (mode === 'browser') {
           await openStatusInBrowser(state);
         } else if (mode === 'webview') {
-          await statusWebview.show({ focus: false });
+          // 命令即"我要看最新的"，绕过缓存新鲜度
+          await statusWebview.show({ focus: false, force: true });
         } else {
           await statusPanel.show();
         }

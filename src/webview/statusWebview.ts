@@ -590,8 +590,8 @@ export const MAX_POLL_MS = 10 * 60 * 1000;
 export const MAX_POLL_INTERVAL_MS = 8000;
 
 export interface StatusWebviewDeps {
-  /** 拉整张状态表（网络优先、失败降级缓存） */
-  loadRecords: () => Promise<StatusQueryResult>;
+  /** 拉整张状态表（缓存优先 + 同步 TTL；`force` 时直取站点，网络失败降级到旧缓存） */
+  loadRecords: (opts?: { force?: boolean }) => Promise<StatusQueryResult>;
   /** 查单条提交的最新判题结果（站点 `status-ajax.php`） */
   pollRow: (submitId: number) => Promise<StatusAjaxRow>;
   /** 取判题详情正文 */
@@ -632,15 +632,16 @@ export class StatusWebview {
    * 打开结果页或重新拉取一次。
    *
    * @param opts.focus 是否把焦点抢到该页（提交成功后为 true，手动刷新状态时为 false）
+   * @param opts.force 绕过缓存新鲜度直取站点（用户显式要求刷新时用）
    */
-  async show(opts: { focus?: boolean } = {}): Promise<void> {
+  async show(opts: { focus?: boolean; force?: boolean } = {}): Promise<void> {
     const created = this.ensurePanel(opts.focus ?? true);
-    await this.reload({ full: created });
+    await this.reload({ full: created, force: opts.force });
   }
 
-  /** 页面上的「刷新列表」按钮 */
+  /** 页面上的「刷新列表」按钮 —— 用户显式要求，绕过缓存 */
   private async onReloadRequest(): Promise<void> {
-    await this.reload({ full: false });
+    await this.reload({ full: false, force: true });
   }
 
   private ensurePanel(focus: boolean): boolean {
@@ -715,13 +716,13 @@ export class StatusWebview {
     return { state: 'off', text: '没有待判定的提交' };
   }
 
-  private async reload(opts: { full: boolean }): Promise<void> {
+  private async reload(opts: { full: boolean; force?: boolean }): Promise<void> {
     if (!this.panel) { return; }
     if (!opts.full) { this.post({ command: 'busy', on: true }); }
 
     let res: StatusQueryResult;
     try {
-      res = await this.deps.loadRecords();
+      res = await this.deps.loadRecords(opts.force ? { force: true } : undefined);
     } catch (e: any) {
       this.deps.log?.(`拉取提交状态失败：${e.message}`);
       if (!this.panel) { return; }

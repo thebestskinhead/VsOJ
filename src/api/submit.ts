@@ -113,6 +113,9 @@ export class SubmitService {
       // 成功口径与旧实现保持一致（200 / 302），且正文无失败特征
       const bodyKind = classifyHtmlBody(body);
       if ((status === 200 || status === 302 || status === 303) && !bodyKind) {
+        // 刚提交完，缓存里的状态记录确定是残的 —— 立刻作废，
+        // 否则几秒后自动弹出的状态页会走 TTL 命中旧快照，看起来像"提交没生效"
+        await this.store?.invalidateStatus(cid);
         return { success: true, kind: 'OK', message: '提交成功' };
       }
 
@@ -141,11 +144,18 @@ export class SubmitService {
   /**
    * 查询提交状态。
    *
-   * 缓存策略：**网络优先，缓存降级**。状态数据的时效性要求高于题目内容，
-   * 所以网络可访问时一律实时请求（顺带把原始 HTML 落盘）；只有请求失败
-   * 或 `oj.cache.offline = true` 时才使用本地缓存，并通过 `fromCache` 告知上层。
+   * 缓存策略（与比赛列表同一口径）：**缓存优先 + 同步 TTL**。
+   * 命中且新鲜就直接用，零请求；过期或 `force` 才联网并原样落盘；
+   * 联网失败时降级到过期缓存（宁肯看略旧的记录，也好过空白）。
+   *
+   * 两处刻意不按 TTL 走：
+   *  - `oj.cache.offline = true` → 只吃缓存，无缓存时置 `offlineNoCache` 由上层讲清
+   *  - 自己刚提交成功 → `submit()` 已作废缓存，这里必然联网，不会读到残快照
+   *
+   * 页面开着时的「等待评测结果」由 `status-ajax.php` 轮询负责（见 {@link fetchStatusAjax}），
+   * 那条路是实时查询，不属缓存域。
    */
-  async queryStatus(userId: string, cid: string): Promise<StatusQueryResult> {
+  async queryStatus(userId: string, cid: string, opts: { force?: boolean } = {}): Promise<StatusQueryResult> {
     const offline = this.store?.offline ?? false;
 
     if (offline) {
@@ -154,6 +164,14 @@ export class SubmitService {
         return { records: parseStatusTable(cached), fromCache: true };
       }
       return { records: [], fromCache: true, offlineNoCache: true };
+    }
+
+    // 新鲜缓存直接交付，不发请求
+    if (this.store && !opts.force) {
+      const cached = await this.store.readStatusHtml(cid);
+      if (cached !== undefined) {
+        return { records: parseStatusTable(cached), fromCache: true };
+      }
     }
 
     try {

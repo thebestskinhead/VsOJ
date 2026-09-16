@@ -10,6 +10,29 @@ import { isCacheEnabled, isOfflineMode, getCacheTtlMs, getBaseUrl } from '../uti
 import { CacheStat, computeStat } from './freshness';
 
 /**
+ * 「离线模式且本地没有缓存」—— 闸门唯一会**拒绝服务**的情形。
+ *
+ * 这类失败必须与「站点上确实没有数据」区分开：前者是**拿不到**，后者是**没有**。
+ * 混为一谈的后果是上层把「离线读不到」显示成「暂无比赛 / 暂无题目」，用户会以为
+ * 站点上的数据丢了。因此闸门在这里抛错，由调用方决定怎么讲述这件事。
+ *
+ * `code` 是给程序看（MCP 客户端、日志）的稳定标识，`message` 是给人看的。
+ * 注意 `code` 刻意不取 `ECONNREFUSED` 这类网络错误码：本错误不代表网络故障，
+ * 而是**配置规定不许联网**，会话层的失败分类不应把它归到 NETWORK。
+ */
+export class OfflineNoCacheError extends Error {
+  public readonly code = 'OFFLINE_NO_CACHE';
+  /** 拿不到的东西（如「比赛列表」「题目列表」），用于拼出人话 */
+  public readonly target: string;
+
+  constructor(target: string) {
+    super(`离线模式且本地无缓存，无法获取${target}`);
+    this.name = 'OfflineNoCacheError';
+    this.target = target;
+  }
+}
+
+/**
  * 【缓存层 · 存储】
  *
  * 唯一负责「读写缓存产物」的模块。
@@ -49,7 +72,11 @@ import { CacheStat, computeStat } from './freshness';
  *
  * ## 失败语义
  *
- * 所有失败都**不抛异常**（缓存是增强，不是前提），返回 undefined / false。
+ * 本模块自身**不抛异常**（缓存是增强，不是前提），失败一律返回 undefined / false。
+ *
+ * 唯一会向上抛的是 {@link OfflineNoCacheError} —— 由 api 层在「离线且无缓存」时抛出。
+ * 那是**闸门的拒答**，不是缓存的失败：它表达的是「配置规定不许联网，而本地又没有」，
+ * 上层必须能把它与「站点上没有数据」区分开。
  */
 export class CacheStore {
   private paths: CachePaths;
@@ -454,14 +481,19 @@ export class CacheStore {
     const identity = fresh.identity;
     const list = meta.problems ? [...meta.problems] : [];
 
-    // 身份优先；旧数据（没有 identity 字段）按「目录名里的题名 → 题名」兜底
+    // 身份优先（本次的 / 上次记下的全局题号）；旧数据（没有 identity 字段）按题名兜底。
+    // 题名有两条来源，可信度不同：目录名里的题名不会被后来的题改写，先认它；
+    // title 字段可能已被覆盖，只在前者认不出时用。
     const wantKey = nameKey(entry.title);
-    const i = list.findIndex(p => {
-      if (p.identity && p.identity === identity) { return true; }
-      if (p.globalId && entry.globalId && String(p.globalId) === String(entry.globalId)) { return true; }
-      if (!wantKey) { return false; }
-      return nameKey(nameFromDir(p.dir)) === wantKey || nameKey(p.title) === wantKey;
-    });
+    const sameIdentity = list.findIndex(p =>
+      (p.identity !== undefined && p.identity === identity)
+      || (p.globalId !== undefined && entry.globalId !== undefined
+        && String(p.globalId) === String(entry.globalId)));
+    const byDir = wantKey
+      ? list.findIndex(p => nameKey(nameFromDir(p.dir)) === wantKey) : -1;
+    const byTitle = (byDir < 0 && wantKey)
+      ? list.findIndex(p => nameKey(p.title) === wantKey) : -1;
+    const i = sameIdentity >= 0 ? sameIdentity : (byDir >= 0 ? byDir : byTitle);
 
     let saved: ProblemMetaEntry;
     if (i >= 0) {
@@ -512,6 +544,7 @@ export class CacheStore {
    * （同一序号换了人时题名会一起被改写），因此身份优先取**目录名里的题名** ——
    * 目录名是建目录那一刻定下的，之后不会再变。一道题在磁盘上留下多个目录时
    * （历史错位造成），按内容分量排序让「有你的源码、缓存更完整」的那个先参与匹配。
+   * 已登记但当前不再映射的目录也一起参与匹配：一道题从列表里消失又回来时拿回原目录。
    *
    * 幂等：列表没变时结果逐字段相同，只刷新 `lastSyncAt`。
    */
@@ -522,20 +555,35 @@ export class CacheStore {
       createdAt: new Date().toISOString(), lastSyncAt: new Date().toISOString(),
     };
 
-    const prev = await this.orderByContent(paths, meta.problems ?? []);
-    const plan = alignProblems(prev, list);
+    const ranked = await this.orderByContent(paths, meta.problems ?? []);
+    // 已登记但当前不再映射的目录**同样参与对齐**：一道题从列表里消失又回来时
+    // （受限页只解析出前几题、题集被整段替换），它要拿回原来的目录 —— 否则会另起一个
+    // 空目录，用户写在旧目录里的代码就此失联。它们排在正式条目之后，同一题名同时
+    // 命中两者时以正式条目为准。
+    const rankedDirs = new Set(ranked.map(e => e.dir));
+    const reclaimed = (meta.orphans ?? [])
+      .filter(o => !rankedDirs.has(o.dir))
+      .map(o => ({
+        pid: '',   // 孤儿没有可比的位置：既不参与逐位配对，也不算「题号变了」
+        title: o.title ?? '',
+        dir: o.dir,
+        ...(o.globalId ? { globalId: o.globalId, identity: `g:${o.globalId}` } : {}),
+      }));
+    const plan = alignProblems([...ranked, ...reclaimed], list);
 
     meta.problems = plan.entries;
     meta.problemCount = plan.entries.length;
     meta.layoutVersion = paths.layoutVersion;
     meta.lastSyncAt = new Date().toISOString();
-    // 孤儿目录只登记一次，避免每轮同步重复堆积
-    const known = new Set((meta.orphans ?? []).map(o => o.dir));
-    const merged = [...(meta.orphans ?? [])];
+    // 孤儿登记 = 「不再映射的本地目录」：被重新认领的目录要从登记里摘掉，
+    // 其余只登记一次，避免每轮同步重复堆积
+    const mapped = new Set(plan.entries.map(e => e.dir));
+    const merged = (meta.orphans ?? []).filter(o => !mapped.has(o.dir));
+    const known = new Set(merged.map(o => o.dir));
     for (const o of plan.orphans) {
       if (known.has(o.dir)) { continue; }
       known.add(o.dir);
-      merged.push({ dir: o.dir, ...(o.title ? { title: o.title } : {}) });
+      merged.push({ dir: o.dir, ...(o.title ? { title: o.title } : {}), ...(o.globalId ? { globalId: o.globalId } : {}) });
     }
     if (merged.length) { meta.orphans = merged; }
     await this.writeJson(paths.meta, meta);
@@ -624,6 +672,11 @@ export class CacheStore {
     await this.writeCachedText(this.paths.contestListFile(page, keyword), html);
   }
 
+  /** 比赛列表缓存状态（供调用方说明「这份数据是缓存，多旧」） */
+  public async statContestListHtml(page: number, keyword?: string): Promise<CacheStat> {
+    return this.statCached(this.paths.contestListFile(page, keyword));
+  }
+
   // ============================================================
   // 比赛页（题目列表来源，原始 HTML）
   // ============================================================
@@ -643,6 +696,13 @@ export class CacheStore {
   public async writeContestPageHtml(cid: string, html: string, title?: string): Promise<void> {
     const paths = await this.ensureContestDir(cid, title ?? '');
     await this.writeCachedText(paths.contestHtml, html);
+  }
+
+  /** 比赛页缓存状态（供调用方说明「这份数据是缓存，多旧」） */
+  public async statContestPageHtml(cid: string): Promise<CacheStat> {
+    const paths = await this.resolveContestDir(cid);
+    if (!paths) { return computeStat('', undefined, Date.now()); }
+    return this.statCached(paths.contestHtml);
   }
 
   // ============================================================
@@ -711,6 +771,23 @@ export class CacheStore {
   public async writeStatusHtml(cid: string, html: string): Promise<void> {
     const paths = await this.ensureContestDir(cid, '');
     await this.writeCachedText(paths.statusHtml, html);
+  }
+
+  /**
+   * 作废状态页缓存。
+   *
+   * 用于**本地已知事实发生变化**的时刻：自己刚提交完，缓存里的记录就确定是残的，
+   * 等下一次请求再判新鲜度会让用户看到「刚提交却查不到」的假象。
+   * 删除而不是改写：删掉等于「没缓存」，下一次读取必然联网，语义最直白。
+   */
+  public async invalidateStatus(cid: string): Promise<void> {
+    const paths = await this.resolveContestDir(cid);
+    if (!paths) { return; }
+    try {
+      await fs.rm(paths.statusHtml, { force: true });
+    } catch (e) {
+      console.warn('[OJ][cache] 作废状态缓存失败:', e);
+    }
   }
 
   // ============================================================
@@ -955,7 +1032,7 @@ export interface AlignPlan {
   /** 站点上新增、本地还没有目录的题 */
   added: AlignEntry[];
   /** 站点上已消失、但目录被保留的题（用户源码 / 测试历史不可再生） */
-  orphans: Array<{ dir: string; title?: string }>;
+  orphans: Array<{ dir: string; title?: string; globalId?: string }>;
   /** 序号发生变化的题（题集被插队 / 删除的痕迹，供通知文案使用） */
   moved: AlignEntry[];
   /** 命中方式统计，便于诊断 */
@@ -983,7 +1060,9 @@ export function problemIdentity(src: { globalId?: string; title?: string; dir?: 
 /** 目录名 → 题名（剥掉目录名的题号前缀，再剥掉题目自带的「问题 X: 」位置前缀） */
 function nameFromDir(dir: string): string {
   return (dir || '')
-    .replace(/^[A-Za-z]{1,3}-/, '')
+    // 目录名的题号前缀：v3 用全局题号 / 题名哈希，v2 用位置字母
+    .replace(/^(?:[A-Za-z]{1,3}|\d{1,6}|t[0-9a-f]{8})-/, '')
+    // v2 目录名里还带着站点写的位置前缀「问题 A: 」
     .replace(/^问题-[A-Za-z]{1,3}-/, '');
 }
 
@@ -1028,6 +1107,8 @@ export function entryOf(p: ProblemLike): AlignEntry {
  *
  * @param prev 旧映射。**顺序有意义**：同一道题对应多个目录时，排在前面的胜出，
  *             调用方按内容分量排序（见 `CacheStore.orderByContent`）。
+ *             条目可以只有目录没有位置（`pid` 为空，见 `<CacheStore.syncProblemIndex>`）——
+ *             这类条目只参与按身份认领，不参与逐位配对，也不算「题号变了」。
  */
 export function alignProblems(prev: PrevEntry[], list: ProblemLike[]): AlignPlan {
   const items = list.map(entryOf);
@@ -1053,12 +1134,22 @@ export function alignProblems(prev: PrevEntry[], list: ProblemLike[]): AlignPlan
   });
 
   // 2) 题名（旧数据没有全局题号时的主要依据）
+  //
+  // 两条来源的**可信度不同**：目录名里的题名是建目录时定下的，之后不变；`title`
+  // 字段则会被后来的题改写（同一序号换了人时一起被覆盖）。所以先让所有目录名把
+  // 自己认领走，`title` 再补那些目录名说不出身份的条目 —— 否则一条陈旧的 title
+  // 会盖过另一条正确的目录名。
   const byName = new Map<string, number>();
+  const weakNames: Array<[string, number]> = [];
   prev.forEach((e, i) => {
-    for (const k of entryKeys(e)) {
-      if (!byName.has(k)) { byName.set(k, i); }
-    }
+    const strong = nameKey(nameFromDir(e.dir));
+    if (strong && !byName.has(strong)) { byName.set(strong, i); }
+    const weak = nameKey(e.title);
+    if (weak) { weakNames.push([weak, i]); }
   });
+  for (const [k, i] of weakNames) {
+    if (!byName.has(k)) { byName.set(k, i); }
+  }
   items.forEach((it, i) => {
     if (hitOf[i] !== undefined) { return; }
     const k = nameKey(it.title);
@@ -1070,6 +1161,10 @@ export function alignProblems(prev: PrevEntry[], list: ProblemLike[]): AlignPlan
   });
 
   // 3) 位置配对：仅当两侧剩余数量相等（既不是插入也不是删除）
+  //
+  // 这是没有任何身份证据时的兜底，所以**不能与身份证据冲突**：双方都带全局题号时，
+  // 不同就意味着不是同一道题 —— 此时按序号配对会把新题安到旧题的目录上。
+  // （「插 8 道又删 8 道」这类净数量不变的操作最容易撞上，因为数量相等这个前提成立。）
   const restItems = items.map((it, i) => ({ it, i })).filter(x => hitOf[x.i] === undefined);
   const restPrev = prev.map((e, j) => ({ e, j })).filter(x => !usedPrev.has(x.j));
   if (restItems.length > 0 && restItems.length === restPrev.length) {
@@ -1077,6 +1172,9 @@ export function alignProblems(prev: PrevEntry[], list: ProblemLike[]): AlignPlan
     for (const { it, i } of restItems) {
       const hit = prevByPid.get(String(it.pid));
       if (!hit) { continue; }
+      const a = (it.globalId || '').trim();
+      const b = (hit.e.globalId || '').trim();
+      if (a && b && a !== b) { continue; }
       usedPrev.add(hit.j); hitOf[i] = hit.j; matchedBy.position += 1;
     }
   }
@@ -1098,26 +1196,21 @@ export function alignProblems(prev: PrevEntry[], list: ProblemLike[]): AlignPlan
   // 未被认领的旧条目 = 站点上已消失（目录保留）
   const orphans = prev
     .filter((_, j) => !usedPrev.has(j))
-    .map(e => ({ dir: e.dir, ...(nameKey(e.title) ? { title: problemName(e.title) } : {}) }));
+    .map(e => ({
+      dir: e.dir,
+      ...(nameKey(e.title) ? { title: problemName(e.title) } : {}),
+      ...(e.globalId ? { globalId: String(e.globalId) } : {}),
+    }));
 
-  // 序号变了的题：题集被插队 / 删除的痕迹
+  // 序号变了的题：题集被插队 / 删除的痕迹。
+  // 没有位置的条目（孤儿目录，`pid` 为空）不参与判定 —— 它没有可比的上一次位置。
   const moved = entries.filter((e, i) => {
     const j = hitOf[i];
-    return j !== undefined && String(prev[j].pid) !== String(e.pid);
+    return j !== undefined && prev[j].pid !== '' && String(prev[j].pid) !== String(e.pid);
   });
 
   entries.sort((a, b) => Number(a.pid) - Number(b.pid));
   return { entries, added, orphans, moved, matchedBy };
-}
-
-/** 旧条目的匹配键：目录名里的题名优先（不会被后来的题改名覆盖），再补题名字段 */
-function entryKeys(e: PrevEntry): string[] {
-  const out: string[] = [];
-  const a = nameKey(nameFromDir(e.dir));
-  const b = nameKey(e.title);
-  if (a) { out.push(a); }
-  if (b && b !== a) { out.push(b); }
-  return out;
 }
 
 /**

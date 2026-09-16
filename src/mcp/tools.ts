@@ -1,10 +1,30 @@
-import { ContestService } from '../api/contest';
+import { ContestService, FetchMeta } from '../api/contest';
 import { ProblemService } from '../api/problem';
 import { StateManager } from '../utils/state';
 import { Contest, ProblemBrief, ProblemDetail } from '../types';
 import { ConfigToolService } from '../config/tools';
 import { TestToolService } from '../test/tools';
 import { ProblemLocalResources } from '../workspace/resources';
+import { OfflineNoCacheError } from '../cache/store';
+
+/**
+ * 闸门拒答（离线且本地无缓存）的文案。
+ *
+ * 这类失败与「站点上没有数据」必须讲成两件事：前者要告诉 AI 「先联网/关掉离线模式」，
+ * 后者才是「这个比赛确实没题」。混在一句「获取失败」里，AI 只会转述成"失败了"。
+ */
+function describeToolError(prefix: string, e: any): string {
+  if (e instanceof OfflineNoCacheError || e?.code === 'OFFLINE_NO_CACHE') {
+    return `${prefix}：${e.message}。当前处于离线模式，需关闭离线模式并联网刷新缓存后再试。`;
+  }
+  return `${prefix}: ${e.message}`;
+}
+
+/** 取数来源（缓存 / 站点 + 缓存年龄），随结果一起交给 AI，便于其判断数据新旧 */
+function dataSourceOf(meta?: FetchMeta): Record<string, unknown> | undefined {
+  if (!meta) { return undefined; }
+  return { from: meta.source === 'cache' ? 'local-cache' : 'site', cacheAgeMs: meta.ageMs };
+}
 
 /** MCP Tool 定义 */
 export interface McpTool {
@@ -37,7 +57,9 @@ export interface McpToolResult {
 const TOOLS: McpTool[] = [
   {
     name: 'get_contest_problems',
-    description: '获取比赛题目列表。如果不指定cid，则返回当前已进入的比赛的所有题目。包含题目编号、标题、AC状态等信息。',
+    description: '获取比赛题目列表。如果不指定cid，则返回当前已进入的比赛的所有题目。包含题目编号、标题、AC状态等信息。'
+      + '数据走本地缓存：命中且新鲜就不联网。结果里的 `dataSource` 标明来自本地缓存还是站点、缓存了多久；'
+      + '离线模式且本地无缓存时会明确报错，而不是返回空列表。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -55,7 +77,10 @@ const TOOLS: McpTool[] = [
       + '包括题目描述、输入说明、输出说明、样例输入输出；'
       + '以及 `local` 段 —— 这道题在本机的落点：源文件、样例（成对的会被本地测试执行）、'
       + '题面图片、测试产物与报告的**绝对路径**。'
-      + '题面里的图只看路径（不内联图片数据）：直接读 `local.assets` 里的文件即可。',
+      + '题面里的图只看路径（不内联图片数据）：直接读 `local.assets` 里的文件即可。'
+      + '题面走本地缓存：命中就直接返回本地内容（离线也能读），超过 `oj.cache.staleSeconds` '
+      + '时会在后台补拉一次最新。结果里的 `dataSource` 标明来自本地缓存还是站点、缓存了多久 —— '
+      + '拿它判断该不该提示用户刷新。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -73,7 +98,8 @@ const TOOLS: McpTool[] = [
   },
   {
     name: 'get_contest_list',
-    description: '获取比赛列表。可以分页获取所有可见的比赛信息，包含比赛ID、标题、状态等。',
+    description: '获取比赛列表。可以分页获取所有可见的比赛信息，包含比赛ID、标题、状态等。'
+      + '数据走本地缓存：命中且新鲜就不联网。结果里的 `dataSource` 标明来自本地缓存还是站点、缓存了多久。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -388,7 +414,7 @@ export class McpToolHandler {
         };
       }
 
-      const { title, problems } = await this.contestService.fetchProblemList(cid);
+      const { title, problems, meta } = await this.contestService.fetchProblemList(cid);
 
       const problemList: unknown[] = problems.map((p: ProblemBrief) => ({
         pid: p.pid,
@@ -403,6 +429,7 @@ export class McpToolHandler {
         contestTitle: title,
         problemCount: problems.length,
         problems: problemList,
+        dataSource: dataSourceOf(meta),
       };
 
       return {
@@ -410,7 +437,7 @@ export class McpToolHandler {
       };
     } catch (e: any) {
       return {
-        content: [{ type: 'text', text: `获取题目列表失败: ${e.message}` }],
+        content: [{ type: 'text', text: describeToolError('获取题目列表失败', e) }],
       };
     }
   }
@@ -430,7 +457,8 @@ export class McpToolHandler {
         };
       }
 
-      const detail: ProblemDetail = await this.problemService.fetchProblem(cid, pid);
+      const loaded = await this.problemService.fetchProblem(cid, pid);
+      const detail: ProblemDetail = loaded.detail;
 
       const result = {
         cid: detail.cid,
@@ -444,6 +472,12 @@ export class McpToolHandler {
         // 本地落点：题面图片与样例都已在本地缓存（初始化这题时抓的），
         // 直接给绝对路径，需要时自己读 —— 不内联 base64（决策 D11），也不另开读图工具
         local: await this.collectLocal(cid, pid),
+        dataSource: {
+          from: loaded.source === 'cache' ? 'local-cache' : 'site',
+          cacheAgeMs: loaded.ageMs,
+          /** 缓存已过期、已在后台补拉：需要最新的话稍后再读一次 */
+          refreshing: loaded.refreshing,
+        },
       };
 
       return {
@@ -451,7 +485,7 @@ export class McpToolHandler {
       };
     } catch (e: any) {
       return {
-        content: [{ type: 'text', text: `获取题目内容失败: ${e.message}` }],
+        content: [{ type: 'text', text: describeToolError('获取题目内容失败', e) }],
       };
     }
   }
@@ -513,7 +547,7 @@ export class McpToolHandler {
       const page = args.page ?? 1;
       const keyword = args.keyword;
 
-      const { rows, pagination } = await this.contestService.fetchList(page, keyword);
+      const { rows, pagination, meta } = await this.contestService.fetchList(page, keyword);
 
       const contestList: unknown[] = rows.map((c: Contest) => ({
         cid: c.cid,
@@ -527,6 +561,7 @@ export class McpToolHandler {
         page: pagination.current,
         totalPages: pagination.total,
         contests: contestList,
+        dataSource: dataSourceOf(meta),
       };
 
       return {
@@ -534,7 +569,7 @@ export class McpToolHandler {
       };
     } catch (e: any) {
       return {
-        content: [{ type: 'text', text: `获取比赛列表失败: ${e.message}` }],
+        content: [{ type: 'text', text: describeToolError('获取比赛列表失败', e) }],
       };
     }
   }

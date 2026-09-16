@@ -154,7 +154,9 @@ export class StatusPanel {
       const cid = this.state.getCurrentCid();
       if (!cid) { this.records = []; this.replace('  未进入比赛\n'); return false; }
       const userId = this.state.getStudentId() || '';
-      const res = await this.submitService.queryStatus(userId, cid);
+      // 本面板的每一条路径都是「用户要看最新的」——单次查看、手动刷新、自动刷新循环，
+      // 因此一律绕过缓存新鲜度直取站点，否则刷新循环会在 TTL 内反复渲染同一份快照
+      const res = await this.submitService.queryStatus(userId, cid, { force: true });
       this.records = this.filterPid
         ? res.records.filter(r => r.problemId === this.filterPid)
         : res.records;
@@ -202,7 +204,8 @@ export class StatusPanel {
       hintParts.push(this.watching ? `自动刷新中 · 提交 ${this.watching}` : '自动刷新中');
       if (this.smartStop) hintParts.push('出结果自停');
     }
-    // 状态数据的时效性要求高：网络优先，缓存只作降级，因此必须让用户看见数据来源
+    // 本面板的每次拉取都是「用户要看最新的」，一律直取站点（见 loadAndRender 的 force）；
+    // 于是只有「网络失败降级到旧缓存」与「离线且无缓存」两种情形需要把来源说出来
     if (this.src.offlineNoCache) hintParts.push('离线模式 · 无本地缓存');
     else if (this.src.fromCache) hintParts.push('离线缓存');
     const autoHint = hintParts.length ? ` [${hintParts.join(' | ')}]` : '';

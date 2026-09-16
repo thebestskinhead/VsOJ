@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { ContestService, AccessError } from '../api/contest';
+import { OfflineNoCacheError } from '../cache/store';
 import { StateManager } from '../utils/state';
 import { ProblemBrief, ProblemStatus } from '../types';
 import {
@@ -102,6 +103,10 @@ export class ProblemTreeProvider implements vscode.TreeDataProvider<ProblemTreeI
         vscode.commands.executeCommand('oj.refreshContests');
         vscode.window.showErrorMessage(`[OJ] ${e.message}`);
         return [new ProblemTreeItem(e.message, 'error', vscode.TreeItemCollapsibleState.None)];
+      }
+      // 离线且无缓存：说清是「拿不到」而不是「这个比赛没题」
+      if (e instanceof OfflineNoCacheError) {
+        return [new ProblemTreeItem('离线模式 · 无本地缓存的题目列表', 'empty', vscode.TreeItemCollapsibleState.None)];
       }
       console.error('[OJ] 题目列表加载失败:', e);
       const hint = isOfflineMode() ? '（离线模式）' : '';

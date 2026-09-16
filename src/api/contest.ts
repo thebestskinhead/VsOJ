@@ -2,7 +2,7 @@ import { apiClient } from './client';
 import { parseContestList, parseProblemList } from '../utils/parser';
 import { Contest, ProblemBrief, Pagination } from '../types';
 import { AuthService } from './auth';
-import { CacheStore, AlignPlan } from '../cache/store';
+import { CacheStore, AlignPlan, OfflineNoCacheError } from '../cache/store';
 
 /**
  * 比赛模块 — 比赛列表 / 题目列表。
@@ -11,7 +11,9 @@ import { CacheStore, AlignPlan } from '../cache/store';
  * （`oj.cache.ttlSeconds`，默认 180s）—— 命中且新鲜就直接用，不发起任何请求；
  * 过期或 `force` 才联网，并**原样落盘原始 HTML**。
  *
- * `oj.cache.offline = true` 时完全跳过网络，只能吃缓存。
+ * `oj.cache.offline = true` 时完全跳过网络，只能吃缓存；**连缓存都没有则抛
+ * {@link OfflineNoCacheError}**，不返回空列表 —— 空列表会被上层讲成「暂无比赛」，
+ * 而事实是「离线拿不到」，两者必须分开（见 `cache/store.ts` 的失败语义）。
  *
  * 题目列表还有一个职责：**每次拿到列表都按身份重建题目索引**
  * （{@link syncIndex}）—— 这是「同一道题始终对应同一个目录」的唯一保证。
@@ -20,6 +22,18 @@ import { CacheStore, AlignPlan } from '../cache/store';
 export interface FetchOptions {
   /** 忽略缓存，强制联网 */
   force?: boolean;
+}
+
+/**
+ * 一次取数的来源与年龄。
+ *
+ * 随结果一起给出，是为了让调用方能**如实说明数据是哪来的**：AI 或用户看到
+ * 「本地缓存 · 3 小时前」才会知道该不该刷新，看到「无来源信息」只能靠猜。
+ */
+export interface FetchMeta {
+  source: 'cache' | 'network';
+  /** 缓存年龄（毫秒）；`source === 'network'` 时为 0 */
+  ageMs: number;
 }
 
 /** 上层钩子 */
@@ -32,8 +46,6 @@ export interface ContestServiceHooks {
    */
   onIndexSynced?: (cid: string, plan: AlignPlan) => void;
 }
-
-const EMPTY_PAGINATION: Pagination = { current: 1, total: 1, pages: [], first: null, last: null };
 
 export class ContestService {
   private auth: AuthService;
@@ -48,20 +60,21 @@ export class ContestService {
 
   /** 获取比赛列表 */
   async fetchList(page: number = 1, keyword?: string, opts: FetchOptions = {}):
-    Promise<{ rows: Contest[]; pagination: Pagination }> {
+    Promise<{ rows: Contest[]; pagination: Pagination; meta: FetchMeta }> {
     const offline = this.store?.offline ?? false;
 
     // 缓存优先
     if (this.store && !opts.force) {
+      const stat = await this.store.statContestListHtml(page, keyword);
       const cached = await this.store.readContestListHtml(page, keyword);
       if (cached !== undefined) {
-        return parseContestList(cached);
+        return { ...parseContestList(cached), meta: { source: 'cache', ageMs: stat.ageMs ?? 0 } };
       }
     }
 
     if (offline) {
-      // 离线且无缓存：返回空结果，由视图层提示
-      return { rows: [], pagination: { ...EMPTY_PAGINATION } };
+      // 离线且无缓存：给不出数据就把话说清楚，别让上层显示成「暂无比赛」
+      throw new OfflineNoCacheError('比赛列表');
     }
 
     try {
@@ -86,7 +99,7 @@ export class ContestService {
 
       const html = typeof response.data === 'string' ? response.data : '';
       await this.store?.writeContestListHtml(page, keyword, html);
-      return parseContestList(html);
+      return { ...parseContestList(html), meta: { source: 'network', ageMs: 0 } };
     } catch (e: any) {
       console.error('[OJ] 比赛列表加载失败:', e);
       throw new Error(`加载比赛列表失败: ${e.message}`);
@@ -115,11 +128,12 @@ export class ContestService {
 
   /** 获取某比赛下的题目列表 */
   async fetchProblemList(cid: string, opts: FetchOptions = {}):
-    Promise<{ title: string; problems: ProblemBrief[] }> {
+    Promise<{ title: string; problems: ProblemBrief[]; meta: FetchMeta }> {
     const offline = this.store?.offline ?? false;
 
     // 缓存优先
     if (this.store && !opts.force) {
+      const stat = await this.store.statContestPageHtml(cid);
       const cached = await this.store.readContestPageHtml(cid);
       if (cached !== undefined) {
         const parsed = parseProblemList(cached);
@@ -128,13 +142,13 @@ export class ContestService {
         if (parsed.problems.length > 0 || offline) {
           parsed.problems.forEach(p => { p.cid = cid; });
           await this.syncIndex(cid, parsed.problems);
-          return parsed;
+          return { ...parsed, meta: { source: 'cache', ageMs: stat.ageMs ?? 0 } };
         }
       }
     }
 
     if (offline) {
-      return { title: '', problems: [] };
+      throw new OfflineNoCacheError('题目列表');
     }
 
     try {
@@ -172,7 +186,7 @@ export class ContestService {
       // 落盘原始 HTML；比赛标题只在这里能拿到，因此目录名在此定稿
       await this.store?.writeContestPageHtml(cid, html, result.title);
 
-      return result;
+      return { ...result, meta: { source: 'network', ageMs: 0 } };
     } catch (e: any) {
       if (e instanceof AccessError) {
         throw e;

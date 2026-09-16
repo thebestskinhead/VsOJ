@@ -139,7 +139,7 @@ export const CONFIG_SEMANTICS: Record<string, ConfigSemantic> = {
     group: '缓存与工作区',
     summary: '**同步读**的缓存有效期（秒），负数 = 永不过期',
     detail: '管的是「命中且新鲜就直接用，**不发任何请求**」这条快路径，'
-      + '用于比赛列表 / 题目列表这类轻量数据。题目详情**不走**它（走 `staleSeconds`）。',
+      + '用于比赛列表 / 题目列表 / 提交状态这类轻量数据。题面**不走**它（走 `staleSeconds`）。',
     values: '整数；负数表示永不过期',
     example: '180',
     getter: 'getCacheTtlMs',
@@ -148,7 +148,7 @@ export const CONFIG_SEMANTICS: Record<string, ConfigSemantic> = {
     group: '缓存与工作区',
     summary: '**异步刷新**的年龄阈值（秒），负数 = 永不过期',
     detail: '与 `ttlSeconds` 分工不同、**不冲突**：这里管的是「先渲染缓存，'
-      + '超过这个年龄才在后台重新拉」。题目详情页用的就是它。',
+      + '超过这个年龄才在后台重新拉」。题面用的就是它。',
     values: '整数；负数表示永不过期',
     example: '900',
     getter: 'getStaleTtlMs',
@@ -156,8 +156,8 @@ export const CONFIG_SEMANTICS: Record<string, ConfigSemantic> = {
   'cache.offline': {
     group: '缓存与工作区',
     summary: '离线模式：只读本地缓存，不发起网络请求',
-    detail: '适合断网/机房无网时翻已缓存过的题目。缓存里没有的内容会直接失败，'
-      + '不会偷偷联网。',
+    detail: '适合断网/机房无网时翻已缓存过的题目。缓存里没有的内容会明确报错'
+      + '（「离线拿不到」而不是「站点上没有」），不会偷偷联网。',
     getter: 'isOfflineMode',
   },
 

@@ -97,16 +97,26 @@ function makeHandler(storeAvailable = true) {
 
   // 只用到 fetchProblem 的网络服务用桩顶掉；其余走真实实现
   const contest = {
-    fetchProblemList: async () => ({ title: '数据结构课', problems: [] }),
-    fetchList: async () => ({ rows: [], pagination: { current: 1, total: 1 } }),
+    fetchProblemList: async () => ({
+      title: '数据结构课', problems: [], meta: { source: 'network', ageMs: 0 },
+    }),
+    fetchList: async () => ({
+      rows: [], pagination: { current: 1, total: 1 }, meta: { source: 'network', ageMs: 0 },
+    }),
   };
   const problem = {
     fetchProblem: async (cid, pid) => ({
-      cid, pid, title: 'A + B Problem',
-      description: '<p>读两个数，输出它们的和。</p>',
-      inputDesc: '<p>一行两个整数。</p>',
-      outputDesc: '<p>一个整数。</p>',
-      sampleInput: '1 2', sampleOutput: '3',
+      detail: {
+        cid, pid, title: 'A + B Problem',
+        description: '<p>读两个数，输出它们的和。</p>',
+        inputDesc: '<p>一行两个整数。</p>',
+        outputDesc: '<p>一个整数。</p>',
+        sampleInput: '1 2', sampleOutput: '3',
+      },
+      html: '<html></html>',
+      source: 'network',
+      ageMs: 0,
+      refreshing: false,
     }),
   };
   const state = { getCurrentCid: () => current.cid, getCurrentPid: () => current.pid };

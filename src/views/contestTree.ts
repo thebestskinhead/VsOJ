@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { ContestService } from '../api/contest';
+import { OfflineNoCacheError } from '../cache/store';
 import { StateManager } from '../utils/state';
 import { Contest, Pagination } from '../types';
 import { getBaseUrl, isOfflineMode } from '../utils/config';
@@ -209,6 +210,10 @@ export class ContestTreeProvider implements vscode.TreeDataProvider<ContestTreeI
 
       return items;
     } catch (e: any) {
+      // 离线且无缓存：说清是「拿不到」而不是「没有比赛」
+      if (e instanceof OfflineNoCacheError) {
+        return [new ContestTreeItem('离线模式 · 无本地缓存的比赛列表', 'empty', vscode.TreeItemCollapsibleState.None)];
+      }
       console.error('[OJ] 比赛列表加载失败:', e);
       return [new ContestTreeItem(`加载失败: ${e.message}`, 'error', vscode.TreeItemCollapsibleState.None)];
     } finally {
