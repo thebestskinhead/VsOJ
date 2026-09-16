@@ -40,6 +40,13 @@ const { SubmitService } = require('../out/api/submit.js');
 const { AuthService } = require('../out/api/auth.js');
 const { AccessGate, LoginRequiredError, accessMode, decideAccess } = require('../out/session/access.js');
 const { apiClient } = require('../out/api/client.js');
+const { StateManager } = require('../out/utils/state.js');
+const { ProblemWebview } = require('../out/webview/problemWebview.js');
+const { StatusWebview } = require('../out/webview/statusWebview.js');
+const { ContestTreeProvider } = require('../out/views/contestTree.js');
+const { ProblemTreeProvider } = require('../out/views/problemTree.js');
+const { StatusPanel } = require('../out/views/statusPanel.js');
+const { StatusRecord } = require('../out/types/index.js');
 
 const context = { globalStorageUri: { fsPath: GLOBAL_STORAGE } };
 const layout = CachePaths.resolve(context);
@@ -100,6 +107,8 @@ const site = {
   loggedIn: false,
   /** 服务端在跟随 302 之后把登录页端回来（会话失效的另一个信号） */
   bounceToLogin: false,
+  /** 站点整体不可达：所有请求都抛错，用于验证「网络故障不得成为免登录授权」 */
+  down: false,
 };
 
 /** 请求记账：路径 → 次数。「零请求」是这套纪律唯一的可自动化守卫 */
@@ -111,6 +120,9 @@ const totalHits = () => Object.values(hits).reduce((a, b) => a + b, 0);
 function route(url, config) {
   const params = (config && config.params) || {};
   hits[url] = (hits[url] || 0) + 1;
+
+  // 站点整体不可达：请求照样记账（「有没有发出去」必须可观测），然后抛错
+  if (site.down) { return { throw: 'network down' }; }
 
   if (url === '/csrf.php') { return { status: 200, data: '<html><body>x</body></html>' }; }
   if (url === '/loginpage.php') { return { status: 200, data: site.loggedIn ? LOGGED_IN_PAGE : LOGIN_PAGE }; }
@@ -168,6 +180,22 @@ const stateStub = {
 };
 
 const auth = new AuthService(stateStub);
+
+/** 给 tree/webview provider 用的「真」状态管理器（替身 ExtensionContext，确定性、无需 VS Code 运行时） */
+const memMemento = (init = {}) => {
+  const m = new Map(Object.entries(init));
+  return {
+    get: (k, d) => (m.has(k) ? m.get(k) : d),
+    update: (k, v) => { if (v === undefined) { m.delete(k); } else { m.set(k, v); } },
+    _m: m,
+  };
+};
+const fakeCtx = {
+  globalState: memMemento(),
+  secrets: memMemento(),
+  subscriptions: [],
+};
+const realState = new StateManager(fakeCtx);
 
 /**
  * 按给定闸门装配三个取数口。
@@ -620,6 +648,235 @@ async function attempt(fn) {
     ok('打开离线开关后同一次调用改为读缓存', after.ok);
     check('打开离线开关后零请求', totalHits(), 0);
     cfg['cache.offline'] = false;
+  }
+
+  // ============================================================
+  // E. 状态变化的收口 —— 驱动真实 webview / tree provider
+  // ============================================================
+  console.log('\n[E] 状态一变，屏幕上已有内容必须跟着变（收口）');
+  {
+    // 捕获 webview 面板最后渲染的 html —— 这是「内容有没有真的上屏/被收回」的唯一证据
+    const realCreatePanel = env.vscode.window.createWebviewPanel;
+    let capturedPanel = null;
+    env.vscode.window.createWebviewPanel = (...a) => { const p = realCreatePanel(...a); capturedPanel = p; return p; };
+    const mkPwv = (gate) => new ProblemWebview(new ProblemService(gate, store), realState, {
+      store,
+      probe: { isReachable: () => true },
+      refresher: { refreshOne: async (pid) => ({ pid, ok: true }) },
+      access: gate,
+      fetchAsset: async () => Buffer.from(''),
+      log: () => {},
+    });
+
+    // E1 题面整页：先以缓存渲染，会话失效后 applyAccessLoss 必须收回旧题面
+    {
+      app.loggedIn = true;
+      cfg['cache.offline'] = true;
+      const gate = gateOf({ forcedOffline: true });
+      const pwv = mkPwv(gate);
+      resetHits();
+      await pwv.show(PUBLIC_CID, '0');
+      ok('题面已渲染上屏（含标题「甲」）', /甲/.test(capturedPanel.webview.html));
+      ok('题面渲染走离线缓存（零请求）', totalHits() === 0);
+
+      // 会话失效：状态收口把整屏换成登录提示，旧题面不得残留
+      app.loggedIn = false;
+      cfg['cache.offline'] = false;
+      await pwv.applyAccessLoss();
+      ok('applyAccessLoss → 改为登录提示', /需要登录/.test(capturedPanel.webview.html));
+      ok('applyAccessLoss → 旧题面内容已收回', !/甲/.test(capturedPanel.webview.html));
+    }
+
+    // E2 状态整页：会话失效后 applyAccessLoss 收口为登录提示并停轮询
+    {
+      const mkStatusRecord = () => ({
+        submitId: 4591960, problemId: 'A', probName: '甲', resultCode: 4,
+        resultName: '答案正确', memory: 1, time: 1, language: 'C++',
+        codeLen: '912 B', submitTime: '2026-09-16',
+      });
+      app.loggedIn = true;
+      const swv = new StatusWebview({
+        loadRecords: async () => ({ records: [mkStatusRecord()], fromCache: false }),
+        pollRow: async () => ({ resultCode: 4, memory: 1, time: 1, judger: 'J' }),
+        loadDetail: async () => ({ page: 'reinfo.php', text: 'x' }),
+        pollIntervalMs: () => 800,
+        currentCid: () => PUBLIC_CID,
+        currentUser: () => '1',
+        currentPid: () => '0',
+        log: () => {},
+      });
+      await swv.show({ focus: true });
+      ok('状态页已渲染（含比赛 cid）', /3775/.test(capturedPanel.webview.html));
+      await swv.applyAccessLoss();
+      ok('statusWebview.applyAccessLoss → 登录提示',
+        /需要登录后才能查看提交状态/.test(capturedPanel.webview.html));
+      ok('statusWebview.applyAccessLoss → 旧提交记录已收回',
+        !/4591960/.test(capturedPanel.webview.html));
+    }
+
+    // E3 离线开关运行中翻转：关掉后未登录再次 show 必须重新裁决为登录提示
+    {
+      app.loggedIn = false;
+      cfg['cache.offline'] = true;
+      const gate = new AccessGate({
+        isLoggedIn: () => app.loggedIn,
+        isForcedOffline: () => !!cfg['cache.offline'],
+      });
+      const pwv = mkPwv(gate);
+      resetHits();
+      await pwv.show(PUBLIC_CID, '0');
+      ok('离线开 + 未登录 → 渲染缓存题面', /甲/.test(capturedPanel.webview.html));
+      ok('离线开 + 未登录 → 零请求', totalHits() === 0);
+
+      cfg['cache.offline'] = false;
+      app.loggedIn = false;
+      resetHits();
+      await pwv.show(PUBLIC_CID, '0');
+      ok('离线关 + 未登录 → 重新裁决为登录提示', /需要登录/.test(capturedPanel.webview.html));
+      ok('离线关 + 未登录 → 旧题面已收回', !/甲/.test(capturedPanel.webview.html));
+      ok('离线关 + 未登录 → 仍零请求（被拦在发请求前）', totalHits() === 0);
+      cfg['cache.offline'] = false;
+    }
+    env.vscode.window.createWebviewPanel = realCreatePanel;
+  }
+
+  // E4/E5 两个 side-tree 未登录时只给登录提示，不得把「上次列表」露出来
+  {
+    app.loggedIn = false;
+    useGate(gateOf({})); // login-required 闸门
+    await realState.setCurrentCid(PUBLIC_CID);
+
+    const ptp = new ProblemTreeProvider(contest, realState);
+    resetHits();
+    const pItems = await ptp.getChildren();
+    check('未登录 · 题目列表只返回一条', pItems.length, 1);
+    check('未登录 · 该条是 login-required', pItems[0].itemType, 'login-required');
+    ok('未登录 · 不泄露任何题目名（无「甲/乙」）',
+      !pItems.some((i) => /甲|乙/.test(i.label)));
+    ok('未登录 · 取题目列表零请求', totalHits() === 0);
+
+    const ctp = new ContestTreeProvider(contest, realState);
+    ctp.setReady();
+    resetHits();
+    const cItems = await ctp.getChildren();
+    check('未登录 · 比赛列表只返回登录提示', cItems[0].itemType, 'login-hint');
+    ok('未登录 · 不泄露任何比赛名（无「数据结构课」）',
+      !cItems.some((i) => /数据结构课|班级内部赛/.test(i.label)));
+    ok('未登录 · 取比赛列表零请求', totalHits() === 0);
+  }
+
+  // E6 状态 OutputChannel：未登录只讲「需要登录」，不得渲染记录残影
+  {
+    app.loggedIn = false;
+    useGate(gateOf({}));
+    let channelText = '';
+    const realChannel = env.vscode.window.createOutputChannel;
+    env.vscode.window.createOutputChannel = (name) => {
+      const ch = realChannel(name);
+      return {
+        ...ch,
+        clear: () => { channelText = ''; },
+        append: (t) => { channelText += t; },
+        appendLine: (t) => { channelText += t + '\n'; },
+        replace: (t) => { channelText = t; },
+      };
+    };
+    await realState.setCurrentCid(PUBLIC_CID);
+    await realState.setStudentId('1');
+    const sp = new StatusPanel(submits, realState);
+    await sp.show();
+    ok('未登录 · 状态面板只讲「需要登录」', /需要登录/.test(channelText));
+    ok('未登录 · 状态面板不泄露任何记录', !/答案正确|4591960/.test(channelText));
+    env.vscode.window.createOutputChannel = realChannel;
+  }
+
+  // ============================================================
+  // F. 离线矩阵 —— 5 target × 登录态 × 缓存有无
+  // ============================================================
+  console.log('\n[F] 离线矩阵：5 target × 登录态 × 缓存有无');
+  {
+    for (const loggedIn of [false, true]) {
+      app.loggedIn = loggedIn;
+      cfg['cache.offline'] = true;
+      useGate(gateOf({ forcedOffline: true }));
+      const tag = loggedIn ? '已登录' : '未登录';
+
+      resetHits();
+      const list = await attempt(() => contest.fetchList(1));
+      const plist = await attempt(() => contest.fetchProblemList(PUBLIC_CID));
+      const prob = await attempt(() => problems.loadProblemHtml(PUBLIC_CID, '0'));
+      const status = await attempt(() => submits.queryStatus('2505050318', PUBLIC_CID));
+      const sub = await submits.submit(PUBLIC_CID, '0', 0, 'int main(){}', 'GOOD');
+      check(`离线·有缓存·${tag} 比赛列表读缓存`, list.ok ? list.value.meta.source : 'x', 'cache');
+      check(`离线·有缓存·${tag} 题目列表读缓存`, plist.ok ? plist.value.meta.source : 'x', 'cache');
+      check(`离线·有缓存·${tag} 题面读缓存`, prob.ok ? prob.value.source : 'x', 'cache');
+      check(`离线·有缓存·${tag} 状态读缓存`, status.ok ? (status.value.fromCache ? 'cache' : 'x') : 'x', 'cache');
+      check(`离线·有缓存·${tag} 提交被拒`, sub.success, false);
+      ok(`离线·有缓存·${tag} 提交文案说清离线`, /离线/.test(sub.message));
+      check(`离线·有缓存·${tag} 全程零请求`, totalHits(), 0);
+
+      resetHits();
+      const ncList = await attempt(() => contest.fetchList(99));
+      const ncPlist = await attempt(() => contest.fetchProblemList('9999'));
+      const ncProb = await attempt(() => problems.loadProblemHtml(PUBLIC_CID, '9'));
+      const ncStatus = await attempt(() => submits.queryStatus('x', '9999'));
+      const ncSub = await submits.submit('9999', '0', 0, 'int main(){}', 'GOOD');
+      check(`离线·无缓存·${tag} 比赛列表→OFFLINE_NO_CACHE`, ncList.kind, 'OFFLINE_NO_CACHE');
+      check(`离线·无缓存·${tag} 题目列表→OFFLINE_NO_CACHE`, ncPlist.kind, 'OFFLINE_NO_CACHE');
+      check(`离线·无缓存·${tag} 题面→OFFLINE_NO_CACHE`, ncProb.kind, 'OFFLINE_NO_CACHE');
+      check(`离线·无缓存·${tag} 状态→OFFLINE_NO_CACHE`, ncStatus.kind, 'OFFLINE_NO_CACHE');
+      check(`离线·无缓存·${tag} 提交→仍 OFFLINE_WRITE`, ncSub.success, false);
+      ok(`离线·无缓存·${tag} 提交文案说清离线`, /离线/.test(ncSub.message));
+      check(`离线·无缓存·${tag} 全程零请求`, totalHits(), 0);
+    }
+    cfg['cache.offline'] = false;
+  }
+
+  // ============================================================
+  // G. 反隐式降级 —— 未登录 + 站点不可达 / 探测异常 → 仍是 login-required
+  // ============================================================
+  console.log('\n[G] 反隐式降级：网络结论绝不构成免登录授权');
+  {
+    // 情形1：请求直接失败 —— 未登录仍拒绝，不得悄悄吃缓存
+    app.loggedIn = false;
+    cfg['cache.offline'] = false;
+    useGate(gateOf({}));
+    site.down = true;
+    try {
+      resetHits();
+      const r = await attempt(() => contest.fetchList(1));
+      check('未登录 + 请求失败 → 仍 login-required', r.kind, 'LOGIN_REQUIRED');
+      check('未登录 + 请求失败 → 一个请求都没发（没去探缓存）', totalHits(), 0);
+    } finally {
+      site.down = false;
+    }
+
+    // 情形2：「可达性探测」返回不可达，也绝不能构成免登录授权
+    const g = new AccessGate({ isLoggedIn: () => false, isForcedOffline: () => false });
+    const v = await g.check('contest-list', async () => false);
+    check('未登录 + 探测不可达 → 仍 deny/LOGIN_REQUIRED', v.kind === 'deny' && v.reason, 'LOGIN_REQUIRED');
+
+    // 情形3：探测本身抛错也不能放行（闸门根本不读探测结果）
+    const g2 = new AccessGate({ isLoggedIn: () => false, isForcedOffline: () => false });
+    const v2 = await g2.check('problem', () => { throw new Error('probe boom'); });
+    check('未登录 + 探测抛错 → 仍 deny/LOGIN_REQUIRED', v2.kind === 'deny' && v2.reason, 'LOGIN_REQUIRED');
+  }
+
+  // ============================================================
+  // H. 公开比赛（站点匿名渲染题面）—— 本机未登录仍拦
+  // ============================================================
+  console.log('\n[H] 公开比赛匿名可渲染，但本机未登录仍拦');
+  {
+    app.loggedIn = false;
+    resetHits();
+    const anon = await apiClient.get('/problem.php', { params: { cid: PUBLIC_CID, pid: '0' } });
+    ok('站点侧：匿名确实能拿到公开比赛题面', /读两个数/.test(anon.data));
+
+    useGate(gateOf({}));
+    resetHits();
+    const r = await attempt(() => problems.fetchProblem(PUBLIC_CID, '0'));
+    check('本机侧：公开比赛题面未登录被拒', r.kind, 'LOGIN_REQUIRED');
+    check('本机侧：没有替用户去取', totalHits(), 0);
   }
 
   cleanup(WORKSPACE, GLOBAL_STORAGE);

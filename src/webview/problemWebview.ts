@@ -75,6 +75,9 @@ export class ProblemWebview {
     return { cid: this.cid, pid: this.pid };
   }
 
+  /** 题目面板当前是否打开（供状态收口判断是否要重新裁决，避免凭空开新面板） */
+  public get isOpen(): boolean { return !!this.panel; }
+
   /**
    * 打开题目。
    *

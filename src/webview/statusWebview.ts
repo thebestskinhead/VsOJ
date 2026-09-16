@@ -620,6 +620,21 @@ export class StatusWebview {
 
   get isOpen(): boolean { return !!this.panel; }
 
+  /**
+   * 登录态失效 / 站点切换时，把已打开的结果页收口为登录提示。
+   *
+   * 提交记录属于「登录态下才该看到」的内容：会话掉了、或换了站点，留在屏上的
+   * 旧记录既可能不属于当前用户，也可能来自上一个站点。这里不再尝试重新拉取，
+   * 直接渲染登录提示，并停掉轮询 —— 否则轮询会在登录提示上继续转，反复去问
+   * 一个已经失效的会话。文案与登录被拦时的首屏兜底保持一致。
+   */
+  public applyAccessLoss(): void {
+    if (!this.panel) { return; }
+    this.pollGen += 1;
+    this.model = undefined;
+    this.panel.webview.html = buildStatusErrorHtml('需要登录后才能查看提交状态');
+  }
+
   dispose(): void {
     this.pollGen += 1;
     this.panel?.dispose();

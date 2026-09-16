@@ -164,12 +164,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (e.affectsConfiguration('oj.baseUrl')) {
         apiClient.updateBaseUrl(getBaseUrl());
         console.log('[OJ] BaseURL 已更新:', getBaseUrl());
+        // 换了站点，已打开的题面 / 状态整页与两个列表仍是旧站点的内容，立刻对齐
+        void syncSurfacesToState();
       }
       if (e.affectsConfiguration('oj.workspace.root') || e.affectsConfiguration('oj.cache')) {
         cache.rebind();
         // 离线开关（oj.cache.offline）影响题目列表标题栏的按钮可见性，改了要立刻反映
         void syncOfflineContext();
         logInfo('[OJ] 缓存层已按新配置重新绑定');
+        // 离线开关翻转：未登录用户此刻能否看缓存、列表是否该出现，都要按现态重算
+        void syncSurfacesToState();
       }
       if (e.affectsConfiguration('oj.session')) {
         sessionKeeper.restart({
@@ -563,6 +567,29 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
   }
 
+  /**
+   * 把屏幕上所有已渲染的 surface 重新对齐当前登录态与离线态。
+   *
+   * 登录态与离线开关是唯一事实来源：状态一变（登出 / 会话失效 / 离线开关翻转 /
+   * 站点切换 / 退出比赛），所有相关内容必须立刻收回或重判，不能留着等用户下次点击。
+   *
+   * 题面整页走「重新裁决」而非「一律收回」——离线开关打开时未登录用户本来就该看到缓存
+   * 题面（用户的明确例外），所以让它重新走一次既有 `show()` 入口，由闸门自己按现态裁一遍；
+   * 没有打开的题目页则跳过，不凭空开一个新面板。状态整页直接收口为登录提示并停掉轮询。
+   */
+  async function syncSurfacesToState(): Promise<void> {
+    contestTreeProvider.refresh();
+    problemTreeProvider.refresh();
+
+    // 题面整页「重新裁决」：当前有打开的题目才重走 show()，让闸门重新裁
+    if (problemWebview.isOpen && problemWebview.current.cid && problemWebview.current.pid) {
+      await problemWebview.show(problemWebview.current.cid, problemWebview.current.pid);
+    }
+
+    // 状态整页收口：登录态掉了就渲染登录提示，并停掉轮询
+    statusWebview.applyAccessLoss();
+  }
+
   /** 登录成功统一回调（所有登录入口共用） */
   async function onLoginSuccess(): Promise<void> {
     await vscode.commands.executeCommand('setContext', 'oj.loggedIn', true);
@@ -631,11 +658,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const wasLoggedIn = state.isLoggedIn();
     await state.setLoggedIn(false);
     renderSessionStatus();
-    // 登录态掉了，两个列表都得把内容换成登录提示 —— 否则过期后还能翻出旧列表
-    contestTreeProvider.refresh();
-    problemTreeProvider.refresh();
-    // 已经打开的题面也要一并收走：它整屏都是内容，留着就是「未登录也能看题」
-    await problemWebview.applyAccessLoss();
+    // 登录态掉了：两个列表、题面整页、状态整页都立刻对齐「未登录」——否则过期后还能翻出旧列表 / 旧记录
+    await syncSurfacesToState();
 
     if (intent) {
       await sessionGuard.setPending(intent);
@@ -803,10 +827,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         await state.setCurrentCid(undefined);
         await state.setCurrentPid(undefined);
         renderSessionStatus();
-        contestTreeProvider.refresh();
-        problemTreeProvider.refresh();
-        // 已打开的题面不能留着：登录态没了，整屏的题目内容也该跟着消失
-        await problemWebview.applyAccessLoss();
+        // 已登录态没了：两个列表、题面整页、状态整页一并对齐「未登录」
+        await syncSurfacesToState();
         vscode.window.showInformationMessage('[OJ] 已登出');
       } catch (e: any) {
         vscode.window.showErrorMessage(`登出失败: ${e.message}`);
@@ -959,16 +981,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   // oj.exitContest
-  context.subscriptions.push(
-    vscode.commands.registerCommand('oj.exitContest', async () => {
-      await state.setCurrentCid(undefined);
-      await state.setCurrentPid(undefined);
-      problemTreeProvider.refresh();
-      // 只停刷新、不释放 OutputChannel —— 释放后这个面板本次会话就再也写不进去了
-      statusPanel.pause();
-      vscode.window.showInformationMessage('[OJ] 已退出比赛');
-    })
-  );
+    context.subscriptions.push(
+      vscode.commands.registerCommand('oj.exitContest', async () => {
+        await state.setCurrentCid(undefined);
+        await state.setCurrentPid(undefined);
+        // 退出比赛也是一次状态变化：列表与已打开的题面 / 状态整页按现态重算
+        await syncSurfacesToState();
+        // 只停刷新、不释放 OutputChannel —— 释放后这个面板本次会话就再也写不进去了
+        statusPanel.pause();
+        vscode.window.showInformationMessage('[OJ] 已退出比赛');
+      })
+    );
 
   // ==========================================
   // 比赛项目命令（S5.3）
