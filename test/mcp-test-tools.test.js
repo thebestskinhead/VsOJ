@@ -88,9 +88,23 @@ function makeHandler(storeAvailable = true) {
       workspaceRoot: WS,
       title: o.title ?? '',
       ...(o.forceRebuild === undefined ? {} : { forceRebuild: o.forceRebuild }),
+      ...(o.sourceFileName ? { sourceFileName: o.sourceFileName } : {}),
     }),
     currentTarget: () => current,
     resources: (cid, pid) => collect(cid, pid, storeAvailable),
+    // 写样例：这里直接落盘到题目的 samples/（生产路径由 extension 包 CacheStore + cache/paths）
+    writeSample: async ({ index, input, output }) => {
+      const inputFile = path.join(SAMPLES, `${index}.in`);
+      const outputFile = path.join(SAMPLES, `${index}.out`);
+      try {
+        fs.mkdirSync(SAMPLES, { recursive: true });
+        fs.writeFileSync(inputFile, input, 'utf8');
+        fs.writeFileSync(outputFile, output, 'utf8');
+        return { ok: true, inputFile, outputFile };
+      } catch (e) {
+        return { ok: false, inputFile, outputFile, error: String(e) };
+      }
+    },
     readText: (f) => { try { return fs.readFileSync(f, 'utf8'); } catch { return undefined; } },
     readSource: (f) => { try { return fs.readFileSync(f, 'utf8'); } catch { return undefined; } },
   });
@@ -170,7 +184,8 @@ async function main() {
   ok('注册了 compile_problem', names.includes('compile_problem'));
   ok('注册了 run_local_test', names.includes('run_local_test'));
   ok('注册了 get_last_test_result', names.includes('get_last_test_result'));
-  check('工具总数（原 5 + 新 3）', names.length, 8);
+  ok('注册了 add_test_case', names.includes('add_test_case'));
+  check('工具总数（原 5 + 新 4）', names.length, 9);
   check('工具名不重复', names.length, new Set(names).size);
   ok('没有「读图片」的独立工具（图片走 get_current_problem 的路径）',
     !names.some((n) => /asset|image|图片/i.test(n)));
@@ -178,10 +193,16 @@ async function main() {
   const tool = (n) => handler.listTools().find((t) => t.name === n);
   ok('get_last_test_result 支持 format 枚举',
     JSON.stringify((tool('get_last_test_result').inputSchema.properties.format.enum)) === '["markdown","json"]');
-  ok('三个工具都声明了 cid/pid', ['compile_problem', 'run_local_test', 'get_last_test_result']
+  ok('四个工具都声明了 cid/pid', ['compile_problem', 'run_local_test', 'add_test_case', 'get_last_test_result']
     .every((n) => 'cid' in tool(n).inputSchema.properties && 'pid' in tool(n).inputSchema.properties));
-  ok('三个工具都不需要必填参数', ['compile_problem', 'run_local_test', 'get_last_test_result']
-    .every((n) => tool(n).inputSchema.required.length === 0));
+  ok('三个执行工具都不需要必填 cid/pid',
+    ['compile_problem', 'run_local_test', 'get_last_test_result']
+      .every((n) => tool(n).inputSchema.required.length === 0));
+  check('add_test_case 必填 input/output', tool('add_test_case').inputSchema.required, ['input', 'output']);
+  ok('compile_problem / run_local_test 支持 source 参数',
+    ['compile_problem', 'run_local_test'].every((n) => 'source' in tool(n).inputSchema.properties));
+  ok('add_test_case 的 input/output 都有说明', ['input', 'output']
+    .every((k) => typeof tool('add_test_case').inputSchema.properties[k].description === 'string'));
 
   // ── 2. get_current_problem 的 local 段 ───────────────────────
   console.log('\n[2] get_current_problem 补本地路径（决策 D11：不内联图片）');
@@ -397,6 +418,83 @@ async function main() {
   const mcpSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'mcp', 'tools.ts'), 'utf8');
   ok('图片没有独立工具', !/get_problem_assets|get_problem_samples/.test(mcpSrc));
   ok('get_current_problem 返回 local 段', /local: await this\.collectLocal/.test(mcpSrc));
+
+  // ── 8. add_test_case：AI 自己补测试用例 ─────────────────────
+  console.log('\n[8] add_test_case');
+  {
+    resetProblem();
+    sample(1, '1 2\n', '3\n');
+    fs.writeFileSync(SOURCE, CORRECT, 'utf8');
+    const h2 = makeHandler();
+
+    // 8a 不传 index → 追加到最后一组之后（已有 1 → 新的是 2）
+    const added = await call(h2, 'add_test_case', { input: '7 8\n', output: '15\n' });
+    ok('回执说明是新增', /已添加测试用例 2（新增）/.test(added));
+    ok('回执给出输入路径', added.includes(path.join(SAMPLES, '2.in')));
+    ok('回执给出期望路径', added.includes(path.join(SAMPLES, '2.out')));
+    check('2.in 真的落盘', fs.readFileSync(path.join(SAMPLES, '2.in'), 'utf8'), '7 8\n');
+    check('2.out 真的落盘', fs.readFileSync(path.join(SAMPLES, '2.out'), 'utf8'), '15\n');
+    ok('回执列出成对可跑', /当前成对可跑：1、2/.test(added));
+    ok('回执提醒「清理缓存会删 samples/」', /清理缓存/.test(added));
+
+    // 8b 显式 index → 覆盖
+    const override = await call(h2, 'add_test_case', { index: 1, input: '2 3\n', output: '5\n' });
+    ok('显式 index → 覆盖原有用例', /已添加测试用例 1（覆盖原有用例）/.test(override));
+    check('1.out 被覆盖', fs.readFileSync(path.join(SAMPLES, '1.out'), 'utf8'), '5\n');
+
+    // 8c 非法参数
+    const badIndex = await call(h2, 'add_test_case', { index: 0, input: 'x', output: 'y' });
+    ok('index 0 → 拒绝并说清', /index 必须是不小于 1 的整数/.test(badIndex));
+    const noOutput = await call(h2, 'add_test_case', { input: 'x' });
+    ok('缺 output → 拒绝', /都必须是字符串/.test(noOutput));
+
+    // 8d 题目目录未建立 → 可操作文案（不是抛错）
+    const noDirAdd = await call(makeHandler(false), 'add_test_case', { input: 'x', output: 'y' });
+    ok('目录未建立 → 说清怎么办', /工作目录还没建立/.test(noDirAdd));
+
+    // 8e 补完用例后 run_local_test 真的会跑它
+    if (HAS_GPP) {
+      writeGppToolchain();
+      const ran = await call(h2, 'run_local_test', { rebuild: true });
+      ok('补的两组都参与判定', /共 2 组，通过 2，不通过 0/.test(ran));
+    } else {
+      console.log('  ~ 跳过「补完用例再跑」用例（无 g++）');
+    }
+  }
+
+  // ── 9. source 参数：指定编译文件（默认 main.cpp） ───────────
+  console.log('\n[9] source 参数');
+  {
+    resetProblem();
+    const h3 = makeHandler();
+    const otherSrc = path.join(PROB, 'other.cpp');
+
+    // 9a 默认仍是 main.cpp（不存在 → 提示还没写代码）
+    const noMain = await call(h3, 'compile_problem');
+    ok('默认找 main.cpp', /还没写代码/.test(noMain) && noMain.includes('main.cpp'));
+
+    // 9b 指定 other.cpp（main.cpp 始终不存在 → 一旦退回默认就会报「还没写代码」）
+    fs.writeFileSync(otherSrc, CORRECT, 'utf8');
+    sample(1, '1 2\n', '3\n');
+    if (HAS_GPP) {
+      writeGppToolchain();
+      const c = await call(h3, 'compile_problem', { source: 'other.cpp', rebuild: true });
+      ok('指定 source 后编译的是它', /编译成功/.test(c) && c.includes('other.cpp'));
+      const r = await call(h3, 'run_local_test', { source: 'other.cpp', rebuild: true });
+      ok('本地测试同样认 source（没退回 main.cpp）', !/还没写代码/.test(r) && /共 1 组，通过 1/.test(r));
+    } else {
+      const c = await call(h3, 'compile_problem', { source: 'other.cpp' });
+      ok('装配阶段认 source（不因缺 main.cpp 报错）', !/还没写代码/.test(c));
+      console.log('  ~ 跳过真编译用例（无 g++）');
+    }
+
+    // 9c 路径安全：不允许带路径 / 越界
+    const escapeArg = await call(h3, 'compile_problem', { source: '..\\..\\evil.cpp' });
+    ok('带路径的 source 被拒绝', /不能带路径/.test(escapeArg));
+    const absArg = await call(h3, 'compile_problem', { source: path.join(PROB, 'other.cpp') });
+    ok('绝对路径的 source 被拒绝', /不能带路径/.test(absArg));
+    fs.rmSync(otherSrc, { force: true });
+  }
 
   // 未知工具照旧有回复
   const unknown = await call(handler, 'no_such_tool');

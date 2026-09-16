@@ -8,7 +8,9 @@
 模块清单与目录结构见 [`docs/DEVELOPMENT.md`](DEVELOPMENT.md) 的「项目结构」一节。
 
 **职责边界明确**：`api` 不碰 UI，`views`/`webview` 不直接发请求，`parser` 是唯一 HTML 解析口，
-`state` 是唯一持久化口，`cache/paths.ts` 是唯一缓存路径来源。
+`state` 是唯一持久化口，`cache/paths.ts` 是唯一缓存路径来源，
+`session/access.ts` 是唯一取数闸门（每个取数入口先问它「此刻允不允许取数、缓存能不能用」），
+`media/localize.ts` 是题面图片本地化的唯一出口。
 
 ## 2. 起点时的缺口（gap）— 逐条对应用户诉求
 
@@ -133,7 +135,7 @@
 
 ### 3.4 MCP 扩展要点（G7）
 
-当前 MCP 共 **8 个**工具：5 个只读 / 配置类 + 3 个测试类。
+当前 MCP 共 **9 个**工具：5 个只读 / 配置类 + 4 个测试类。
 
 | 工具 | 输入 | 输出 | 落地于 |
 |---|---|---|---|
@@ -142,8 +144,9 @@
 | `get_contest_list` | `page?, keyword?` | 分页比赛列表 + `dataSource` | S0 |
 | `get_config_manual` | `section?, format?` | 配置说明书（结构来自 `package.json`） | S6.5 |
 | `init_config` | `settings?, toolchains?, scope?, apply?` | 预览 / 落盘结果 | S6.5 |
-| `compile_problem` | `cid?, pid?, rebuild?` | 编译器原文 / 命令 / 产物路径 | S6.7 |
-| `run_local_test` | `cid?, pid?, rebuild?` | 与 `report.md` 逐字一致的报告文本 | S6.7 |
+| `add_test_case` | `cid?, pid?, index?, input, output` | 写入 `samples/<序号>.in/.out` 的回执 + 当前用例清单 | S7.2 |
+| `compile_problem` | `cid?, pid?, source?, rebuild?` | 编译器原文 / 命令 / 产物路径（`source` 默认 `main.cpp`） | S6.7 |
+| `run_local_test` | `cid?, pid?, source?, rebuild?` | 与 `report.md` 逐字一致的报告文本 | S6.7 |
 | `get_last_test_result` | `cid?, pid?, format?` | 上次报告 + 过期标记（**不重跑**） | S6.7 |
 
 三个读工具的结果里都带 `dataSource`（`from: local-cache | site`、`cacheAgeMs`；
@@ -181,13 +184,17 @@
 | **S2** | 会话保活 + 失效自愈 | `src/session/keeper.ts`、`src/session/guard.ts`、`submit` 错误分类、4 个会话命令、状态栏、`test/session.test.js` | ✅ |
 | **S3** | 静态资源层（登录/提交页只调接口、不加载站点页面） | 由插件自绘的登录页 / 提交页达成，不另建 `media/` | ✅ |
 | **S4** | 运行期缓存刷新 + 离线模式 | 详见 `docs/PLAN_S4.md`（契约 / 阶段 / 测试） | ✅ |
-| **S5** | 比赛项目初始化（懒初始化 / 全量预取 / 左代码右题目 / 无工作区守卫） | `src/workspace/initializer.ts`、`guard.ts`、`wiring.ts`、`openSource.ts`；布局 v2；`test/{init,workspace-guard,project-tree,open-source}.test.js` | ✅ |
-| **S6** | 本地测试引擎 + MCP 扩展 | `src/test/*`、`src/config/*`、`src/workspace/resources.ts`、`src/webview/{testResult,status,toolchain}Webview.ts`；**8 个 MCP 工具**（3 个测试类）；`docs/PLAN_S6.md` | ✅ |
+| **S5** | 比赛项目初始化（懒初始化 / 全量预取 / 左代码右题目 / 无工作区守卫） | `src/workspace/initializer.ts`、`guard.ts`、`wiring.ts`、`openSource.ts`；布局 v2（**S6.11 起升为 v3**，题目目录改 `<全局题号>-<标题>`）；`test/{init,workspace-guard,project-tree,open-source}.test.js` | ✅ |
+| **S6** | 本地测试引擎 + MCP 扩展 | `src/test/*`、`src/config/*`、`src/workspace/resources.ts`、`src/webview/{testResult,status,toolchain}Webview.ts`；**9 个 MCP 工具**（4 个测试类）；`docs/PLAN_S6.md` | ✅ |
+| **S6.10** | 写盘前确认 + 装配类失败一律打开结果页 | 初始化前先问一次（初始化并打开 / 只看题面 / 本场不再问）；编译没过、工具链命令找不到时同样打开结果页 | ✅ |
+| **S6.11** | 布局 v3 与题目索引按身份对齐（题目目录改 `<全局题号>-<标题>`，插题 / 删题不再错位） | `src/cache/{paths,store}.ts`、`src/utils/slug.ts`、`test/{sync,sync-stress}.test.js` | ✅ |
 | **S7** | 状态页静态化 | 自绘 `StatusWebview`，`statusPanel` 的代理渲染下线 | ✅ |
+| **S7.1** | 取数统一过访问闸门（未登录只走登录提示、免登录读缓存只由强制离线开关授权、状态一变即收口已渲染内容） | `src/session/access.ts`、`src/api/*`、`test/{access,cache-gate}.test.js` | ✅ |
+| **S7.2** | MCP 补测试用例工具 + 编译 / 测试支持指定源文件 | 新增 `add_test_case`（写 `samples/N.in` / `N.out`）；`compile_problem` / `run_local_test` 加 `source` 参数（默认 `main.cpp`，只接受题目目录内的文件名） | ✅ |
 
 ### 测试与验证
 
-`npm test` 一次性跑完全部套件（**32 套件 / 2481 项断言**），全部脱离 VS Code 运行时
+`npm test` 一次性跑完全部套件（**32 套件 / 2503 项断言**），全部脱离 VS Code 运行时
 （`vscode` 模块桩 + 本地 HTTP 服务器）。**引擎套件不 mock 编译与执行** ——
 用本机真实的 g++ 编译真实源码、跑真实样例、比真实字节
 （找不到编译器时该组用例降级为 skip 并说明，不伪装成通过）。
@@ -197,8 +204,8 @@
 | `sync-stress` | 717 | 题目索引同步的激进大范围高频变动（尾插 / 删 / 中间增删 / 重排 / 截断 / 重复行）不变量：目录不乱认、用户产物零改动、缓存可刷新 |
 | `status-webview` | 148 | 提交结果页：结果码映射、轮询队列、注入转义、亮色、**首屏只赋值一次 `webview.html`** |
 | `access` | 166 | 访问闸门：登录态与离线的状态转换；未登录一律拒绝且零请求；离线仅强制开关授权读缓存；会话过期降级并广播；状态一变已渲染内容即收口（含后台刷新失效、只读预览随工作区变） |
-| `mcp-test-tools` | 91 | MCP 三工具（真 `McpToolHandler` + 真 g++）、`get_current_problem` 的 `local` 段、读结果不重跑 |
-| `cache-layout` | 91 | 布局 v2、字母目录命名、幂等、重命名、索引兜底、多比赛隔离、slug 边界、清理语义 |
+| `mcp-test-tools` | 113 | MCP 四工具（真 `McpToolHandler` + 真 g++）、`add_test_case` 落盘与回执、`source` 参数与路径安全、`get_current_problem` 的 `local` 段、读结果不重跑 |
+| `cache-layout` | 91 | 布局 v3、`<全局题号>-<标题>` 目录命名、幂等、重命名、索引兜底、多比赛隔离、slug 边界、清理语义 |
 | `toolchain-page` | 90 | 工具链配置页：模型组装、保存计划（部分覆盖 / 恢复默认 / 坏输入不落盘）、渲染转义、真落盘后引擎读回 |
 | `config-writer` | 85 | `planConfigWrite` 纯函数：键名容错、类型转换、错误拒绝落盘 |
 | `session` | 84 | 失效分类、登录页判定、意图重放与过期、保活时序与登录时的会话切换、对本地 HTTP 服务器端到端验证提交分类 |
@@ -249,7 +256,7 @@ S3,S4,S5 ─► S7
 | 心跳增加服务器负担 | 默认 4 分钟 / 单请求 85 B ≈ 每天 < 40 KB；提供开关与间隔配置 |
 | 缓存污染工作区 | 缓存根可配、`cache.enabled=false` 可全关；根目录自动写入 `.gitignore` 建议（不强制） |
 | 用户机器无编译环境 | 插件不带任何编译器：缺工具链时给出「缺什么命令 + 探测过哪些位置」，并允许把命令路径写进 `.vsoj/toolchains.json`（页面上也能改） |
-| 自绘页面的资源加载 | 页面不引用任何外部资源（样式与脚本一律内联），并自带 `Content-Security-Policy` 声明；开脚本的只有提交结果页与工具链配置页两个，其余页面不开脚本 |
+| 自绘页面的资源加载 | 页面不引用任何外部资源（样式与脚本一律内联）；需要交互的自绘页（登录 / 账号 / 题目 / 提交 / 提交结果 / 工具链）开 `enableScripts` 并走消息通道（统一用 `command` 字段），**本地测试结果页零脚本**；CSP 目前只在工具链配置页声明 |
 
 ## 6. 不变更承诺
 

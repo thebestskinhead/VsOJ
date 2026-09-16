@@ -40,6 +40,13 @@ export interface BuildTestDepsOptions {
   title?: string;
   /** 强制重新编译；不传则按 `oj.test.reuseBuild`（默认不复用 → 每次都重编） */
   forceRebuild?: boolean;
+  /**
+   * 要编译的源文件名（默认取 `oj.project.sourceFileName`，通常是 `main.cpp`）。
+   *
+   * **只能是题目目录内的文件名**（如 `main.cpp`）：带路径分隔符、`..` 或绝对路径一律拒绝 —
+   * 编译发生在这一道题的目录里，参数不该成为「让编译器去读别处文件」的通道。
+   */
+  sourceFileName?: string;
   log?: (msg: string) => void;
 }
 
@@ -70,6 +77,19 @@ function relTo(root: string, p: string): string {
 }
 
 /**
+ * 参数里的源文件名是否「就是一个文件名」。
+ *
+ * 拒绝路径分隔符、`..` 与绝对路径（含 Windows 盘符）——`source` 是给 AI/用户用的便利参数，
+ * 不该变成「让编译器去读题目录之外文件」的通道。
+ */
+function isPlainFileName(name: string): boolean {
+  if (!name || name === '.' || name === '..') { return false; }
+  if (name.includes('/') || name.includes('\\')) { return false; }
+  if (nodePath.isAbsolute(name) || /^[a-zA-Z]:/.test(name)) { return false; }
+  return true;
+}
+
+/**
  * 组装一次测试/运行所需的全部依赖。
  *
  * 返回 `ok:false` 时给的是**可操作**的错误文案（该建哪个文件、该改哪个配置），
@@ -84,7 +104,14 @@ export async function buildTestDeps(opts: BuildTestDepsOptions): Promise<BuildTe
     return { ok: false, error: `比赛 ${cid} 的工作目录还没建立：先在侧边栏进入这场比赛。` };
   }
 
-  const sourceFile = paths.mainSource(pid, getSourceFileName());
+  const wantedSource = (opts.sourceFileName ?? '').trim();
+  if (wantedSource && !isPlainFileName(wantedSource)) {
+    return {
+      ok: false,
+      error: `source 只能是题目目录内的文件名（如 main.cpp），不能带路径或 ..：${wantedSource}`,
+    };
+  }
+  const sourceFile = paths.mainSource(pid, wantedSource || getSourceFileName());
   if (!(await store.exists(sourceFile))) {
     return {
       ok: false,

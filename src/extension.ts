@@ -40,6 +40,7 @@ import { parseProblemList } from './utils/parser';
 import { formatBytes, numToLetter } from './utils/format';
 import { ProblemInitializer } from './workspace/initializer';
 import { buildInitDeps } from './workspace/wiring';
+import { CachePaths } from './cache/paths';
 import { AlignPlan } from './cache/store';
 import { openSourceInLeftColumn as openLeftSource } from './workspace/openSource';
 import { buildTestDeps, listSampleIndexes } from './test/wiring';
@@ -226,6 +227,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       workspaceRoot: workspaceRoot(),
       ...(opts.title ? { title: opts.title } : {}),
       ...(opts.forceRebuild === undefined ? {} : { forceRebuild: opts.forceRebuild }),
+      // 指定编译文件：只收文件名，路径由 buildTestDeps 在题目目录里解析
+      ...(opts.sourceFileName ? { sourceFileName: opts.sourceFileName } : {}),
       log: logInfo,
     }),
     // 当前打开的是题面（它比 globalState 更贴近「他正在看哪道题」）
@@ -238,6 +241,29 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     resources: (cid, pid) => collectProblemResources({
       store: cache, cid, pid, sourceFileName: getSourceFileName(),
     }),
+    // 写样例（AI 自己补测试用例）：路径拼装归 cache/paths，写盘走 CacheStore.writeUserFile。
+    // 用 writeUserFile 而非 writeSamples —— 手写的用例是**用户资产**，
+    // 不该被「oj.cache.enabled=false（不写站点数据）」连坐挡掉。
+    writeSample: async ({ cid, pid, index, input, output }) => {
+      const paths = await cache.resolveContestDir(cid);
+      if (!paths) {
+        return {
+          ok: false,
+          inputFile: '',
+          outputFile: '',
+          error: `比赛 ${cid} 的工作目录还没建立：先在侧边栏进入这场比赛。`,
+        };
+      }
+      const dir = paths.samplesDir(pid);
+      const inputFile = CachePaths.sampleIn(dir, index);
+      const outputFile = CachePaths.sampleOut(dir, index);
+      const okIn = await cache.writeUserFile(inputFile, input);
+      const okOut = await cache.writeUserFile(outputFile, output);
+      if (!okIn || !okOut) {
+        return { ok: false, inputFile, outputFile, error: '写入样例文件失败（目录不可写？）。' };
+      }
+      return { ok: true, inputFile, outputFile };
+    },
     readText: (file) => {
       try { return fs.readFileSync(file, 'utf8'); } catch { return undefined; }
     },

@@ -195,6 +195,40 @@ const TOOLS: McpTool[] = [
     },
   },
   {
+    name: 'add_test_case',
+    description: '【补测试数据】为题目添加一组测试用例（标准输入 + 期望输出），'
+      + '写入 samples/<序号>.in 与 .out；之后 run_local_test 会把所有成对样例一起跑。'
+      + '站点样例不够用时用它补（只有一组、或想加边界数据）。'
+      + '不传 index 时自动追加到最后一组之后；传 index 则覆盖 / 新建该序号。'
+      + '注意：samples/ 属于缓存目录，执行「清理缓存」会删除它（源文件与 test/ 结果不受影响）。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        cid: {
+          type: 'string',
+          description: '比赛ID（可选，不传则用当前比赛）',
+        },
+        pid: {
+          type: 'string',
+          description: '题目ID（可选，不传则用当前打开的题目）',
+        },
+        index: {
+          type: 'number',
+          description: '用例序号，从 1 开始（可选，不传则追加到最后一组之后）',
+        },
+        input: {
+          type: 'string',
+          description: '标准输入全文（没有输入时传空字符串 ""）',
+        },
+        output: {
+          type: 'string',
+          description: '期望输出全文（判定时先做换行归一化，再逐字节比对）',
+        },
+      },
+      required: ['input', 'output'],
+    },
+  },
+  {
     name: 'compile_problem',
     description: '【本地验证第一步】只编译当前题目，不跑样例、不判定、不写结果文件。'
       + '用来快速确认「编译过不过」：编译失败时直接返回编译器原文（不用去翻插件日志），'
@@ -210,6 +244,11 @@ const TOOLS: McpTool[] = [
         pid: {
           type: 'string',
           description: '题目ID（可选，不传则用当前打开的题目）',
+        },
+        source: {
+          type: 'string',
+          description: '要编译的源文件名（可选，默认用 oj.project.sourceFileName，通常 main.cpp）。'
+            + '只能是题目目录内的文件名，不能带路径 —— 编译只发生在这道题的目录里。',
         },
         rebuild: {
           type: 'boolean',
@@ -238,6 +277,11 @@ const TOOLS: McpTool[] = [
         pid: {
           type: 'string',
           description: '题目ID（可选，不传则用当前打开的题目）',
+        },
+        source: {
+          type: 'string',
+          description: '要编译 / 运行的源文件名（可选，默认用 oj.project.sourceFileName，通常 main.cpp）。'
+            + '只能是题目目录内的文件名，不能带路径。',
         },
         rebuild: {
           type: 'boolean',
@@ -327,6 +371,8 @@ export class McpToolHandler {
         return this.handleCompileProblem(args);
       case 'run_local_test':
         return this.handleRunLocalTest(args);
+      case 'add_test_case':
+        return this.handleAddTestCase(args);
       case 'get_last_test_result':
         return this.handleGetLastTestResult(args);
       default:
@@ -373,6 +419,16 @@ export class McpToolHandler {
       return { content: [{ type: 'text', text: await this.testService.getLastTestResult(args) }] };
     } catch (e: any) {
       return { content: [{ type: 'text', text: `读取最近结果失败: ${e?.message ?? e}` }] };
+    }
+  }
+
+  /** 补一组测试用例（写入 samples/） */
+  private async handleAddTestCase(args: Record<string, any>): Promise<McpToolResult> {
+    if (!this.testService) { return this.testServiceMissing(); }
+    try {
+      return { content: [{ type: 'text', text: await this.testService.addTestCase(args) }] };
+    } catch (e: any) {
+      return { content: [{ type: 'text', text: `添加测试用例失败: ${e?.message ?? e}` }] };
     }
   }
 

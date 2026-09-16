@@ -1,7 +1,7 @@
 /**
  * 【测试 · MCP 工具服务】
  *
- * MCP 通道里的三个测试工具（编译 / 本地测试 / 读最近结果）的实现。
+ * MCP 通道里的四个测试工具（编译 / 本地测试 / 补测试用例 / 读最近结果）的实现。
  *
  * 分工与 `config/tools.ts` 一致：**零 vscode 依赖、全部靠注入**，「怎么装配依赖」
  * 留给 `extension.ts`。这样「编译报错时该说什么」「没跑过测试该说什么」这类文案
@@ -27,8 +27,21 @@ export interface TestToolDeps {
   buildDeps: (
     cid: string,
     pid: string,
-    opts: { forceRebuild?: boolean; title?: string },
+    opts: { forceRebuild?: boolean; title?: string; sourceFileName?: string },
   ) => Promise<BuildTestDepsResult>;
+  /**
+   * 写入一组样例（`samples/<index>.in` / `.out`）。
+   *
+   * 「路径怎么拼、写进哪个目录」由扩展侧决定（这里只认序号与内容），
+   * 与 `resources` 同一条分工：本模块不拼路径。
+   */
+  writeSample: (opts: {
+    cid: string;
+    pid: string;
+    index: number;
+    input: string;
+    output: string;
+  }) => Promise<{ ok: boolean; inputFile: string; outputFile: string; error?: string }>;
   /** 当前题目（AI 不传 cid/pid 时用） */
   currentTarget: () => { cid?: string; pid?: string; title?: string };
   /** 题目本地资源（样例与产物路径）；比赛目录未建立时返回 undefined */
@@ -186,6 +199,57 @@ export class TestToolService {
     ].join('\n');
   }
 
+  /**
+   * 【补测试数据】添加一组测试用例（标准输入 + 期望输出），写入 `samples/<序号>.in` / `.out`。
+   *
+   * 站点样例不够用时（只有一组、或想补边界数据）由 AI 自己造 —— 补完 `run_local_test`
+   * 会把它一起跑。不传 `index` 时**追加到最后一组之后**；显式传 `index` 则覆盖 / 新建该序号。
+   *
+   * 成功也要把「现在的用例清单」一并回去：AI 需要知道下一组该用几号、有没有半对的。
+   */
+  async addTestCase(args: Record<string, any>): Promise<string> {
+    const t = this.resolveTarget(args);
+    if ('error' in t) { return t.error; }
+
+    const input = args?.input;
+    const output = args?.output;
+    if (typeof input !== 'string' || typeof output !== 'string') {
+      return '添加失败：input 与 output 都必须是字符串（没有输入时传空字符串 ""，不能省略）。';
+    }
+
+    const res = await this.deps.resources(t.cid, t.pid);
+    if (!res) {
+      return `比赛 ${t.cid} 的工作目录还没建立：先在侧边栏进入这场比赛（会建目录），再补测试用例。`;
+    }
+
+    const index = this.pickSampleIndex(args, res.samples.map((s) => s.index));
+    if (typeof index === 'string') { return index; }
+
+    const existed = res.samples.some((s) => s.index === index);
+    const w = await this.deps.writeSample({ cid: t.cid, pid: t.pid, index, input, output });
+    if (!w.ok) {
+      return `添加测试用例失败 · ${this.nameOf(t)}\n${w.error ?? '写入样例文件失败。'}`;
+    }
+
+    // 写完重新读一次：清单以磁盘为准（成对 / 半对由同一套 discoverCases 判定，不自己算）
+    const after = (await this.deps.resources(t.cid, t.pid)) ?? res;
+    const pairs = after.samples.filter((s) => s.hasInput && s.hasOutput).map((s) => s.index);
+    const half = after.samples.filter((s) => !(s.hasInput && s.hasOutput));
+
+    return [
+      `已添加测试用例 ${index}（${existed ? '覆盖原有用例' : '新增'}）· ${this.nameOf(t)}`,
+      `- 输入：${w.inputFile}`,
+      `- 期望输出：${w.outputFile}`,
+      `- 当前成对可跑：${pairs.join('、') || '无'}`,
+      ...(half.length
+        ? [`- 半对（会被跳过）：${half.map((s) => `${s.index}（缺 ${s.hasInput ? '.out' : '.in'}）`).join('、')}`]
+        : []),
+      '',
+      '下一步：run_local_test 会执行全部成对样例。',
+      '注意：samples/ 属于缓存目录，「清理缓存」会删除它（源文件与 test/ 里的结果会保留）。',
+    ].join('\n');
+  }
+
   // ─────────────────────────────────────────────────────────
   // 内部
   // ─────────────────────────────────────────────────────────
@@ -221,11 +285,34 @@ export class TestToolService {
   private buildOpts(
     args: Record<string, any>,
     title: string,
-  ): { forceRebuild?: boolean; title?: string } {
+  ): { forceRebuild?: boolean; title?: string; sourceFileName?: string } {
+    // `source` 只做去空白：是不是「题目目录内的文件名」由 buildTestDeps 判定 ——
+    // 只有它知道题目目录在哪，拒绝的理由也该在那一层给。
+    const source = typeof args?.source === 'string' ? args.source.trim() : '';
     return {
       ...(args?.rebuild === true ? { forceRebuild: true } : {}),
       ...(title ? { title } : {}),
+      ...(source ? { sourceFileName: source } : {}),
     };
+  }
+
+  /**
+   * 决定写到第几号。
+   *
+   * 不传 `index` = 追加到最后一组之后（站点的单组样例是 1，所以下一条是 2）；
+   * 传了就必须是 ≥ 1 的整数，否则返回一段可操作的文案（而不是抛错）。
+   */
+  private pickSampleIndex(args: Record<string, any>, existing: number[]): number | string {
+    const raw = args?.index;
+    if (raw === undefined || raw === null || raw === '') {
+      return existing.reduce((m, i) => Math.max(m, i), 0) + 1;
+    }
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < 1) {
+      return `添加失败：index 必须是不小于 1 的整数（收到 ${JSON.stringify(raw)}）。`
+        + '不传 index 则自动追加到最后一组之后。';
+    }
+    return n;
   }
 
   /** `toolchains.json` 的问题（文件不存在等）不静默 —— 它会让工具链「看起来」不对 */
