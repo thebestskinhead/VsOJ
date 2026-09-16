@@ -6,16 +6,23 @@ import { ConfigToolService } from '../config/tools';
 import { TestToolService } from '../test/tools';
 import { ProblemLocalResources } from '../workspace/resources';
 import { OfflineNoCacheError } from '../cache/store';
+import { LoginRequiredError } from '../session/access';
 
 /**
- * 闸门拒答（离线且本地无缓存）的文案。
+ * 工具取数失败的文案。
  *
- * 这类失败与「站点上没有数据」必须讲成两件事：前者要告诉 AI 「先联网/关掉离线模式」，
- * 后者才是「这个比赛确实没题」。混在一句「获取失败」里，AI 只会转述成"失败了"。
+ * 三类失败必须讲成三件事，AI 才不会统统转述成"失败了"：
+ *  - **未登录**：内容与缓存都不提供，得让用户先登录
+ *  - **离线且无缓存**：先联网（或关掉离线模式）把缓存刷出来
+ *  - 其它（无权限 / 不存在 / 网络）：照实说
  */
 function describeToolError(prefix: string, e: any): string {
+  if (e instanceof LoginRequiredError || e?.code === 'LOGIN_REQUIRED') {
+    return `${prefix}：${e.message}。未登录时不提供比赛列表与题面，本地缓存也不会被读出 —— `
+      + '请先在 VS Code 里执行「OJ: 登录」（或点侧边栏的比赛/题目条目），登录后重试。';
+  }
   if (e instanceof OfflineNoCacheError || e?.code === 'OFFLINE_NO_CACHE') {
-    return `${prefix}：${e.message}。当前处于离线模式，需关闭离线模式并联网刷新缓存后再试。`;
+    return `${prefix}：${e.message}。当前处于离线状态，需联网刷新缓存后再试。`;
   }
   return `${prefix}: ${e.message}`;
 }
@@ -58,8 +65,9 @@ const TOOLS: McpTool[] = [
   {
     name: 'get_contest_problems',
     description: '获取比赛题目列表。如果不指定cid，则返回当前已进入的比赛的所有题目。包含题目编号、标题、AC状态等信息。'
-      + '数据走本地缓存：命中且新鲜就不联网。结果里的 `dataSource` 标明来自本地缓存还是站点、缓存了多久；'
-      + '离线模式且本地无缓存时会明确报错，而不是返回空列表。',
+      + '需要登录：未登录时一律拒绝（题目名也算内容），离线时改读本地缓存并支持读取过期内容。'
+      + '结果里的 `dataSource` 标明来自本地缓存还是站点、缓存了多久；'
+      + '离线且本地无缓存时会明确报错，而不是返回空列表。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -78,9 +86,9 @@ const TOOLS: McpTool[] = [
       + '以及 `local` 段 —— 这道题在本机的落点：源文件、样例（成对的会被本地测试执行）、'
       + '题面图片、测试产物与报告的**绝对路径**。'
       + '题面里的图只看路径（不内联图片数据）：直接读 `local.assets` 里的文件即可。'
-      + '题面走本地缓存：命中就直接返回本地内容（离线也能读），超过 `oj.cache.staleSeconds` '
-      + '时会在后台补拉一次最新。结果里的 `dataSource` 标明来自本地缓存还是站点、缓存了多久 —— '
-      + '拿它判断该不该提示用户刷新。',
+      + '需要登录：未登录时一律拒绝，本地缓存的题面也不会被读出；离线时改读本地缓存'
+      + '（这正是离线做题的用法）。超过 `oj.cache.staleSeconds` 时会在后台补拉一次最新。'
+      + '结果里的 `dataSource` 标明来自本地缓存还是站点、缓存了多久 —— 拿它判断该不该提示用户刷新。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -99,7 +107,8 @@ const TOOLS: McpTool[] = [
   {
     name: 'get_contest_list',
     description: '获取比赛列表。可以分页获取所有可见的比赛信息，包含比赛ID、标题、状态等。'
-      + '数据走本地缓存：命中且新鲜就不联网。结果里的 `dataSource` 标明来自本地缓存还是站点、缓存了多久。',
+      + '需要登录：未登录时一律拒绝（站点对未登录用户是放开的，拒绝由本机把关），'
+      + '离线时改读本地缓存并支持读取过期内容。结果里的 `dataSource` 标明来自本地缓存还是站点、缓存了多久。',
     inputSchema: {
       type: 'object',
       properties: {

@@ -35,12 +35,15 @@ export class AuthService {
     }
   }
 
-  /** 检查当前是否存在有效登录态 — 复用 api.js checkLogin */
-  async isLoggedIn(): Promise<boolean> {
+  /**
+   * 探测登录态。
+   *
+   * 返回 `undefined` 表示**无法判定**（网络层失败 / 服务端异常）—— 这与「确认未登录」
+   * 是两回事：前者不该动本机已保存的会话，否则断网启动一次就等于被登出一次。
+   * 需要「是 / 否」两个答案的调用方用 {@link isLoggedIn}。
+   */
+  async probeLogin(): Promise<boolean | undefined> {
     try {
-      const cookiesBefore = await apiClient.dumpCookies();
-      logInfo(`登录中`);
-
       const response = await apiClient.get('/loginpage.php', {
         headers: { 'Cache-Control': 'no-cache' },
       }, 'auth.isLoggedIn');
@@ -50,10 +53,16 @@ export class AuthService {
       logInfo(`isLoggedIn 结果 — ${loggedIn ? '✅ 已登录' : '❌ 未登录'} (${text.includes('<a href=logout.php>') ? '含 logout.php' : '不含 logout.php 标记'})`);
       await this.state.setLoggedIn(loggedIn);
       return loggedIn;
-    } catch (e) {
+    } catch (e: any) {
       console.error('[OJ] 登录状态检查失败:', e);
-      return false;
+      return undefined;
     }
+  }
+
+  /** 检查当前是否存在有效登录态 — 无法判定时按「未登录」处理 */
+  async isLoggedIn(): Promise<boolean> {
+    logInfo(`登录中`);
+    return (await this.probeLogin()) === true;
   }
 
   /** 使用账号密码登录 — 复用 login.js handleLoginSubmit */

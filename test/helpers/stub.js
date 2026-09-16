@@ -175,4 +175,32 @@ function cleanup(...dirs) {
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-module.exports = { installVscodeStub, makeChecker, makeMemoryMemento, cleanup, sleep };
+/**
+ * 造一个访问闸门（`out/session/access.js` 的 AccessGate）。
+ *
+ * 默认是「已登录 + 跟随真实离线开关」——也就是测试里最常需要的档位：
+ * 离线开关是**运行时可变**的（用例中途翻转它），写死会让离线场景假通过。
+ * 需要别的档位时按需覆盖。
+ *
+ * @param {object} [opts]
+ * @param {boolean} [opts.loggedIn=true]
+ * @param {boolean} [opts.forcedOffline]      指定则写死，不指定则跟随 `oj.cache.offline`
+ */
+function makeAccessGate(opts = {}) {
+  const { AccessGate } = require('../../out/session/access.js');
+  const gate = new AccessGate({
+    isLoggedIn: opts.isLoggedIn ?? (() => opts.loggedIn !== false),
+    // 显式给了 forcedOffline 就写死；没给则跟随真实配置（离线开关是运行时可变项）
+    isForcedOffline: opts.isForcedOffline
+      ?? (opts.forcedOffline !== undefined
+        ? () => !!opts.forcedOffline
+        : () => require('../../out/utils/config.js').isOfflineMode()),
+    onSessionLost: opts.onSessionLost,
+    log: opts.log,
+  });
+  return { gate };
+}
+
+module.exports = {
+  installVscodeStub, makeChecker, makeMemoryMemento, cleanup, sleep, makeAccessGate,
+};

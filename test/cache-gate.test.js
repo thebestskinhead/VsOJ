@@ -13,7 +13,7 @@
 // 运行：node test/cache-gate.test.js
 const path = require('path');
 const fs = require('fs');
-const { installVscodeStub, makeChecker, sleep } = require('./helpers/stub');
+const { installVscodeStub, makeChecker, sleep, makeAccessGate } = require('./helpers/stub');
 
 const cfg = {
   'workspace.root': '.vsoj',
@@ -33,6 +33,7 @@ const { ContestService } = require('../out/api/contest.js');
 const { ProblemService } = require('../out/api/problem.js');
 const { SubmitService } = require('../out/api/submit.js');
 const { apiClient } = require('../out/api/client.js');
+const { LoginRequiredError } = require('../out/session/access.js');
 
 const context = { globalStorageUri: { fsPath: GLOBAL_STORAGE } };
 const layout = CachePaths.resolve(context);
@@ -95,9 +96,11 @@ function ageFile(file, msOld) {
   fs.utimesSync(file, t, t);
 }
 
-const contest = new ContestService({ fetchCsrfToken: async () => 'tok' }, store);
-const problems = new ProblemService(store);
-const submits = new SubmitService({ fetchCsrfToken: async () => 'tok' }, store);
+// 闸门默认档：已登录 + 站点可达（本套件验的是缓存口径，不是登录闸门）
+const { gate } = makeAccessGate();
+const contest = new ContestService({ fetchCsrfToken: async () => 'tok' }, gate, store);
+const problems = new ProblemService(gate, store);
+const submits = new SubmitService({ fetchCsrfToken: async () => 'tok' }, gate, store);
 
 (async () => {
   // ─────────── 铺初始数据 ───────────
@@ -289,17 +292,68 @@ const submits = new SubmitService({ fetchCsrfToken: async () => 'tok' }, store);
     check('来源标为站点', after.fromCache, false);
   }
 
-  // ─────────── 9. 状态页 · 离线且无缓存：保持「标记」而非抛错 ───────────
+  // ─────────── 9. 状态页 · 离线且无缓存：抛错而非返回空表 ───────────
   console.log('\n[9] 状态页 · 离线且无缓存');
   {
     try { fs.rmSync(cp.statusHtml, { force: true }); } catch { /* ignore */ }
     cfg['cache.offline'] = true;
     resetNet(() => { throw new Error('离线模式不该联网'); });
-    const r = await submits.queryStatus('2505050318', CID);
-    check('记录了「离线无缓存」这一事实', r.offlineNoCache, true);
-    check('记录为空', r.records.length, 0);
+    try {
+      await submits.queryStatus('2505050318', CID);
+      check('离线无缓存 · 状态 → 抛错', 'no-throw', 'throw');
+    } catch (e) {
+      check('离线无缓存 · 状态 → 抛可识别错误', e instanceof OfflineNoCacheError, true);
+      check('错误码稳定（给程序看）', e.code, 'OFFLINE_NO_CACHE');
+      check('错误里说明拿不到什么', e.target, '提交状态');
+      ok('错误文案不是空话', /离线/.test(e.message));
+    }
     check('零请求', net.calls.length, 0);
     cfg['cache.offline'] = false;
+  }
+
+  // ─────────── 10. 轮询 / 详情路径的会话失效读时校验 ───────────
+  console.log('\n[10] 轮询 / 详情路径 · 会话失效读时校验');
+  {
+    // 独立闸门：带 onSessionLost 计数器，且已登录（轮询接口本就不走 check）
+    const lost = { n: 0 };
+    const gate = makeAccessGate({ onSessionLost: () => { lost.n += 1; } });
+    const svc = new SubmitService({ fetchCsrfToken: async () => 'tok' }, gate.gate, store);
+
+    // 登录页形状：复用站点实测特征（user_id 输入框 + vcode.php，无 logout.php），不臆造
+    const LOGIN_BODY = '<html><body><form method="post">'
+      + '<input name="user_id" placeholder="用户名">'
+      + '<img src="vcode.php?1">'
+      + '</form></body></html>';
+
+    // fetchStatusAjax 拿到登录页 → 抛 LoginRequiredError 且触发一次 onSessionLost
+    resetNet(() => ({ status: 200, data: LOGIN_BODY }));
+    try {
+      await svc.fetchStatusAjax(4591960);
+      check('fetchStatusAjax 登录页 → 抛错', 'no-throw', 'throw');
+    } catch (e) {
+      check('抛的是 LoginRequiredError', e instanceof LoginRequiredError, true);
+      check('错误码为 LOGIN_REQUIRED', e.code, 'LOGIN_REQUIRED');
+    }
+    check('fetchStatusAjax 触发了一次 onSessionLost', lost.n, 1);
+
+    // 重新登录复位后，fetchJudgementDetail 同样要抛且触发一次
+    gate.gate.sessionRenewed();
+    resetNet(() => ({ status: 200, data: LOGIN_BODY }));
+    try {
+      await svc.fetchJudgementDetail(4591960, 6);
+      check('fetchJudgementDetail 登录页 → 抛错', 'no-throw', 'throw');
+    } catch (e) {
+      check('抛的是 LoginRequiredError', e instanceof LoginRequiredError, true);
+      check('错误码为 LOGIN_REQUIRED', e.code, 'LOGIN_REQUIRED');
+    }
+    check('fetchJudgementDetail 触发了一次 onSessionLost', lost.n, 2);
+
+    // 正常判题内容：不触发 onSessionLost，行为不回归
+    const before = lost.n;
+    resetNet(() => ({ status: 200, data: '4,2228,55,Judger1,100' }));
+    const row = await svc.fetchStatusAjax(4591960);
+    check('正常判题内容能解析出结果码', row.resultCode, 4);
+    check('正常内容不触发 onSessionLost', lost.n, before);
   }
 
   process.exit(done() ? 0 : 1);

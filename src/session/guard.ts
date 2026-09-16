@@ -186,14 +186,29 @@ export function needsRelogin(kind: FailureKind | 'OK'): boolean {
 // 意图重放
 // ============================================================
 
-/** 待重放的用户意图 */
+/** 待重放的用户意图 —— 因登录失效而中断，重新登录后原地继续 */
+export type PendingIntentKind =
+  /** 提交源码 */
+  | 'submit'
+  /** 打开某道题的题面 */
+  | 'open-problem'
+  /** 进入某个比赛（题目列表） */
+  | 'enter-contest';
+
+/**
+ * 待重放的用户意图。
+ *
+ * 只记**用户想去哪**（比赛 + 题目，加提交所需的最小信息），不记内容：
+ * 源码在重放时重新读盘，避免持有一份已经过期的副本。
+ */
 export interface PendingIntent {
-  kind: 'submit';
+  kind: PendingIntentKind;
   cid: string;
+  /** 题目序号；`enter-contest` 下为空串 */
   pid: string;
-  /** 源码文件绝对路径（重放时重新读盘，避免持有过期内容） */
+  /** 源码文件绝对路径（重放时重新读盘，避免持有过期内容）；仅 `submit` 用 */
   sourceFile?: string;
-  /** 期望语言编号（可选，缺省时按文件扩展名推断） */
+  /** 期望语言编号（可选，缺省时按文件扩展名推断）；仅 `submit` 用 */
   language?: number;
   /** 记录时间（ISO），超时后自动失效 */
   createdAt: string;

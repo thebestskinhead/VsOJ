@@ -2,7 +2,8 @@ import { apiClient } from './client';
 import { parseStatusTable, parseStatusAjaxRow, parseJudgementPre, StatusAjaxRow } from '../utils/parser';
 import { StatusRecord, LANGUAGE_EXT, LANGUAGE_NAME } from '../types';
 import { AuthService } from './auth';
-import { CacheStore } from '../cache/store';
+import { CacheStore, OfflineNoCacheError } from '../cache/store';
+import { AccessGate, LoginRequiredError, ACCESS_MESSAGE } from '../session/access';
 import {
   classifyHtmlBody, classifyHttpResponse, classifyThrown, looksLikeLoginPage, FailureKind,
 } from '../session/guard';
@@ -30,8 +31,6 @@ export interface StatusQueryResult {
   records: StatusRecord[];
   /** 数据是否来自本地缓存（网络不可用 / 离线模式） */
   fromCache: boolean;
-  /** 离线模式且本地无缓存 */
-  offlineNoCache?: boolean;
 }
 
 /** 单条提交的判题行 —— 类型定义在解析层，这里再导出方便上层引用 */
@@ -39,10 +38,12 @@ export type { StatusAjaxRow };
 
 export class SubmitService {
   private auth: AuthService;
+  private access: AccessGate;
   private store?: CacheStore;
 
-  constructor(auth: AuthService, store?: CacheStore) {
+  constructor(auth: AuthService, access: AccessGate, store?: CacheStore) {
     this.auth = auth;
+    this.access = access;
     this.store = store;
   }
 
@@ -50,6 +51,8 @@ export class SubmitService {
    * 提交代码 — 复用 api.js submitCode
    *
    * 与旧实现的关键差异：
+   *  - **先过闸门**：未登录 / 离线下的写操作在本机就挡掉，不必等站点回一个
+   *    空体 500 再反推「原来没登录」
    *  - 使用 `validateStatus: () => true` 拿到 5xx 响应体，而不是让 axios 直接抛错，
    *    这样才能按 docs/SITE_ANALYSIS.md §5 的实测信号判定「会话失效」
    *  - 不再抛异常表达业务失败，统一返回 {@link SubmitOutcome}
@@ -61,6 +64,19 @@ export class SubmitService {
     source: string,
     vcode: string,
   ): Promise<SubmitOutcome> {
+    // 写操作没有缓存可读，`probeCache` 恒为 false：离线态下直接是「离线不能提交」
+    const verdict = await this.access.check('submit', () => false);
+    if (verdict.kind === 'deny') {
+      return {
+        success: false,
+        // 未登录归到 SESSION_EXPIRED：提交入口据此保留意图并引导登录，登录后自动重放
+        kind: verdict.reason === 'LOGIN_REQUIRED' ? 'SESSION_EXPIRED' : 'NETWORK',
+        message: verdict.reason === 'LOGIN_REQUIRED'
+          ? '未登录，请先登录后再提交'
+          : ACCESS_MESSAGE.OFFLINE_WRITE,
+      };
+    }
+
     // CSRF 缺失意味着会话/登录态不可用 —— 与站点「需要登录才能提交」一致
     let csrf = '';
     try {
@@ -138,37 +154,51 @@ export class SubmitService {
       params: { user_id: userId, cid },
       headers: { 'Cache-Control': 'no-cache' },
     }, 'submit.fetchStatusHtml');
-    return typeof response.data === 'string' ? response.data : '';
+    const html = typeof response.data === 'string' ? response.data : '';
+    if (this.access.noteResponse(html)) {
+      throw new LoginRequiredError('status', '登录已过期，请重新登录后继续');
+    }
+    return html;
   }
 
   /**
    * 查询提交状态。
    *
-   * 缓存策略（与比赛列表同一口径）：**缓存优先 + 同步 TTL**。
+   * 缓存策略（与比赛列表同一口径）：先过闸门，再**缓存优先 + 同步 TTL**。
    * 命中且新鲜就直接用，零请求；过期或 `force` 才联网并原样落盘；
    * 联网失败时降级到过期缓存（宁肯看略旧的记录，也好过空白）。
    *
-   * 两处刻意不按 TTL 走：
-   *  - `oj.cache.offline = true` → 只吃缓存，无缓存时置 `offlineNoCache` 由上层讲清
+   * 三处刻意不按 TTL 走：
+   *  - 未登录 → 抛 {@link LoginRequiredError}，由视图层请用户登录（**不读缓存**：
+   *    过期的会话不该还能翻出上一位使用者的提交记录）
+   *  - 离线 → 只吃缓存，无缓存时抛 `OfflineNoCacheError`，由上层讲清「离线且无缓存」
    *  - 自己刚提交成功 → `submit()` 已作废缓存，这里必然联网，不会读到残快照
    *
    * 页面开着时的「等待评测结果」由 `status-ajax.php` 轮询负责（见 {@link fetchStatusAjax}），
    * 那条路是实时查询，不属缓存域。
    */
   async queryStatus(userId: string, cid: string, opts: { force?: boolean } = {}): Promise<StatusQueryResult> {
-    const offline = this.store?.offline ?? false;
+    const store = this.store;
+    const verdict = await this.access.check('status', async () =>
+      (await store?.readStatusHtml(cid, { allowStale: true })) !== undefined);
 
-    if (offline) {
-      const cached = await this.store?.readStatusHtml(cid, { allowStale: true });
+    if (verdict.kind === 'deny') {
+      if (verdict.reason === 'LOGIN_REQUIRED') { throw new LoginRequiredError('status'); }
+      throw new OfflineNoCacheError('提交状态');
+    }
+
+    // 离线态：只吃缓存
+    if (verdict.kind === 'cache') {
+      const cached = await store?.readStatusHtml(cid, { allowStale: true });
       if (cached !== undefined) {
         return { records: parseStatusTable(cached), fromCache: true };
       }
-      return { records: [], fromCache: true, offlineNoCache: true };
+      throw new OfflineNoCacheError('提交状态');
     }
 
     // 新鲜缓存直接交付，不发请求
-    if (this.store && !opts.force) {
-      const cached = await this.store.readStatusHtml(cid);
+    if (store && !opts.force) {
+      const cached = await store.readStatusHtml(cid);
       if (cached !== undefined) {
         return { records: parseStatusTable(cached), fromCache: true };
       }
@@ -176,11 +206,13 @@ export class SubmitService {
 
     try {
       const html = await this.fetchStatusHtml(userId, cid);
-      await this.store?.writeStatusHtml(cid, html);
+      await store?.writeStatusHtml(cid, html);
       return { records: parseStatusTable(html), fromCache: false };
     } catch (e: any) {
+      // 会话失效不回退缓存：那份记录可能已经不是这个人的了
+      if (e instanceof LoginRequiredError) { throw e; }
       // 降级：网络不可用 → 读本地缓存（宁肯看到略旧的记录，也好过空白）
-      const cached = await this.store?.readStatusHtml(cid, { allowStale: true });
+      const cached = await store?.readStatusHtml(cid, { allowStale: true });
       if (cached !== undefined) {
         console.warn('[OJ] 状态查询失败，降级使用本地缓存:', e.message);
         return { records: parseStatusTable(cached), fromCache: true };
@@ -206,6 +238,12 @@ export class SubmitService {
       headers: { 'Cache-Control': 'no-cache' },
     }, 'submit.fetchStatusAjax');
     const text = typeof response.data === 'string' ? response.data : '';
+    // 读时校验：响应若其实是登录页（会话已在服务端失效）就降级登录态并广播
+    // onSessionLost，必须放在解析之前 —— 登录页解析必然失败，不能先兜底成
+    // 「结果码 0」一路空转轮询下去。
+    if (this.access.noteResponse(text)) {
+      throw new LoginRequiredError('status', '登录已过期，请重新登录后继续');
+    }
     const row = parseStatusAjaxRow(text);
     if (!row) {
       throw new Error(`status-ajax 返回了非判题内容（可能已退出登录）：${text.slice(0, 80)}`);
@@ -230,6 +268,10 @@ export class SubmitService {
       headers: { 'Cache-Control': 'no-cache' },
     }, 'submit.fetchJudgementDetail');
     const html = typeof response.data === 'string' ? response.data : '';
+    // 读时校验：同上，登录页特征命中即降级登录态并广播 onSessionLost，再判解析失败。
+    if (this.access.noteResponse(html)) {
+      throw new LoginRequiredError('status', '登录已过期，请重新登录后继续');
+    }
     const text = parseJudgementPre(html);
     if (text === null) {
       throw new Error(`${page} 里没有可读内容（会话可能已失效，或该提交没有详情）`);

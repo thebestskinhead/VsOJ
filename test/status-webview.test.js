@@ -7,7 +7,7 @@
 //   2) 「自动刷新但不重载页面」这条要求很容易被写回成 `webview.html = ...`：
 //      那样功能看着正常（状态确实变了），却把滚动位置和展开的详情全丢了。
 //      所以这里直接断言「首屏之后 html 只被赋值过一次」，把这条钉死。
-const { installVscodeStub, makeChecker, sleep } = require('./helpers/stub');
+const { installVscodeStub, makeChecker, sleep, makeAccessGate } = require('./helpers/stub');
 
 const env = installVscodeStub();
 
@@ -23,6 +23,8 @@ const {
 } = require('../out/webview/statusWebview.js');
 
 const { check, ok, done } = makeChecker();
+const { LoginRequiredError } = require('../out/session/access.js');
+const { OfflineNoCacheError } = require('../out/cache/store.js');
 
 // ─────────────────────────────────────────────────────────────
 // 0. 测试脚手架
@@ -282,7 +284,7 @@ ok('无当前题目时不过滤', !noPid.includes('<body class="only-current"'))
 check('空表文案', rowsHtml(buildStatusModel([], { cid: 'c', userId: 'u' })).includes('还没有你的提交记录'), true);
 const offline = buildStatusHtml(buildStatusModel([rec()], { cid: 'c', userId: 'u', fromCache: true }));
 ok('缓存降级有提示', offline.includes('本地缓存里的记录'));
-const noCache = buildStatusHtml(buildStatusModel([], { cid: 'c', userId: 'u', offlineNoCache: true }));
+const noCache = buildStatusHtml(buildStatusModel([], { cid: 'c', userId: 'u' }), { offlineNoCacheNotice: true });
 ok('离线和无缓存有提示', noCache.includes('离线模式'));
 const errPage = buildStatusErrorHtml('连接超时 & 失败');
 ok('兜底页也是亮色', /color-scheme:\s*light/.test(errPage) && !errPage.includes('--vscode-'));
@@ -418,6 +420,21 @@ const HOLD = 900;
   check('失败后手动刷新不整页替换', fake3.log.html.length, 1);
   ok('失败后手动刷新给提示', fake3.log.messages.some(m => m.command === 'notice' && m.kind === 'err'));
 
+  // 离线且无缓存：loadRecords 抛 OfflineNoCacheError → 首屏仍渲染一次，且提示含「离线」
+  // （这次改动把「读标志位」换成「接住异常」，必须保证用户提示没丢）
+  const fakeOffline = useFakePanel();
+  const wvOffline = new StatusWebview({
+    loadRecords: async () => { throw new OfflineNoCacheError('提交状态'); },
+    pollRow: async () => ({ resultCode: 4, memory: 0, time: 0, judger: '' }),
+    loadDetail: async () => ({ page: 'reinfo.php', text: '' }),
+    pollIntervalMs: () => POLL_MS,
+    currentCid: () => 'c', currentUser: () => 'u', currentPid: () => '22',
+  });
+  await wvOffline.show();
+  check('离线无缓存 · 首屏仍渲染一次', fakeOffline.log.html.length, 1);
+  ok('离线无缓存 · 首屏提示含「离线」', fakeOffline.log.html[0].includes('离线模式'));
+  ok('离线无缓存 · 走的是结果页（非兜底页）', fakeOffline.log.html[0].includes('提交结果'));
+
   // 关闭面板：在途轮询要自己退出，且不再发消息
   const fake4 = useFakePanel();
   let pollCount = 0;
@@ -438,6 +455,23 @@ const HOLD = 900;
   check('关闭后在途轮询停下', pollCount, beforeDispose);
   check('关闭后不再发消息', fake4.log.messages.length, msgsAtDispose);
 
+  // 轮询遇到 LoginRequiredError → 停止轮询，交给登录提示（不重复弹「继续重试」）
+  const fakeLogin = useFakePanel();
+  let pollErr = 0;
+  const wvLogin = new StatusWebview({
+    loadRecords: async () => ({ records: [rec({ submitId: 700, resultCode: 0 })], fromCache: false }),
+    pollRow: async () => { pollErr += 1; throw new LoginRequiredError('status'); },
+    loadDetail: async () => ({ page: 'reinfo.php', text: '' }),
+    pollIntervalMs: () => POLL_MS,
+    currentCid: () => 'c', currentUser: () => 'u', currentPid: () => '22',
+  });
+  await wvLogin.show();
+  await fakeLogin.log.messageHandler({ command: 'ready' });
+  await sleep(POLL_MS + 120);
+  check('遇到 LoginRequiredError 只轮询一次（不再继续）', pollErr, 1);
+  const retryNotices = fakeLogin.log.messages.filter(m => m.command === 'notice' && m.kind === 'err');
+  ok('不再弹「轮询失败（会继续重试）」', !retryNotices.some(m => /继续重试/.test(m.text)));
+
   // 重复 show() 复用同一个面板（不新开）
   const fake5 = useFakePanel();
   const wv5 = new StatusWebview({
@@ -457,7 +491,7 @@ const HOLD = 900;
   // 9. 转义实现只有一份（题目页也走 utils/format）
   // ─────────────────────────────────────────────────────────────
   console.log('\n[9] 共用的转义实现');
-  const svc = new ProblemService();
+  const svc = new ProblemService(makeAccessGate().gate);
   const p = svc.buildProblemHtml({
     cid: '3775', pid: '0', title: 'A "quote" & <tag>', description: '<p>x</p>',
     inputDesc: '', outputDesc: '', sampleInput: '', sampleOutput: '',

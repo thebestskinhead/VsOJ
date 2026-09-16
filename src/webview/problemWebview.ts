@@ -2,11 +2,12 @@ import * as vscode from 'vscode';
 import { ProblemService } from '../api/problem';
 import { StateManager } from '../utils/state';
 import { parseProblemDetail } from '../utils/parser';
-import { CacheStore } from '../cache/store';
+import { CacheStore, OfflineNoCacheError } from '../cache/store';
 import { ProblemRefresher, RefreshOneResult } from '../cache/refresher';
 import { resolveRevisitPlan } from '../cache/revalidate';
 import { formatAge } from '../cache/freshness';
 import { ConnectivityProbe } from '../session/connectivity';
+import { AccessGate, AccessReason, LoginRequiredError } from '../session/access';
 import { localizeImages } from '../media/localize';
 import { getStaleTtlMs, getBaseUrl } from '../utils/config';
 import { escapeHtml } from '../utils/format';
@@ -29,6 +30,8 @@ export interface ProblemWebviewDeps {
   store: CacheStore;
   probe: ConnectivityProbe;
   refresher: ProblemRefresher;
+  /** 访问闸门：未登录时题目页一个字都不渲染，直接换成登录提示 */
+  access: AccessGate;
   /** 抓取题面图片（传入绝对 URL） */
   fetchAsset: (absoluteUrl: string) => Promise<Buffer>;
   log?: (msg: string) => void;
@@ -85,8 +88,29 @@ export class ProblemWebview {
 
     this.ensurePanel();
 
+    // 闸门先过：未登录时题目一个字都不给 —— 站点对公开比赛是免登录渲染的，
+    // 拦不住就会把题面端给未登录用户，等他写完代码点提交才发现要登录
+    const verdict = await this.deps.access.check('problem', async () =>
+      (await this.deps.store.statProblemHtml(cid, pid)).exists);
+    if (verdict.kind === 'deny') {
+      await this.renderDenied(verdict.reason);
+      return;
+    }
+
     if (this.readOnly) {
       await this.renderFromNetwork();
+      return;
+    }
+
+    // 离线态：只吃缓存，不排后台刷新
+    if (verdict.kind === 'cache') {
+      const cached = await this.deps.store.readProblemHtml(cid, pid, { allowStale: true });
+      if (cached !== undefined) {
+        const stat = await this.deps.store.statProblemHtml(cid, pid);
+        await this.render(cached, { text: this.bannerText('offline', stat.ageMs, false), kind: 'offline' });
+        return;
+      }
+      await this.renderDenied('OFFLINE_NO_CACHE');
       return;
     }
 
@@ -133,6 +157,12 @@ export class ProblemWebview {
         ? { text: '只读预览 · 未打开文件夹（不写盘、不使用缓存）', kind: 'offline' }
         : { text: '已更新 · 刚刚', kind: 'fresh' });
     } catch (e: any) {
+      // 取回的是登录页 —— 与「取不到」不是一回事，得引导去登录
+      if (e instanceof LoginRequiredError || e instanceof OfflineNoCacheError) {
+        this.deps.log?.(`[problem] ${e.name}：${e.message}`);
+        await this.renderDenied(e instanceof LoginRequiredError ? 'LOGIN_REQUIRED' : 'OFFLINE_NO_CACHE');
+        return;
+      }
       const offline = this.deps.store.offline;
       this.deps.log?.(`[problem] 加载失败：${e?.message ?? e}`);
       this.panel!.webview.html = this.getErrorHtml(
@@ -141,6 +171,29 @@ export class ProblemWebview {
           : `加载题目失败：${e?.message ?? e}`,
       );
     }
+  }
+
+  /**
+   * 闸门拒答时把面板换成登录提示（或被拒原因的说明）。
+   *
+   * 侧边栏那类列表可以只留一行占位，题目页不行 —— 它整屏都是内容，
+   * 留着上一次渲染的题面等于「未登录也能看题」。
+   */
+  private async renderDenied(reason: AccessReason): Promise<void> {
+    this.lastContentHtml = '';
+    this.panel!.title = 'OJ 登录';
+    this.panel!.webview.html = this.getLoginRequiredHtml(reason);
+  }
+
+  /**
+   * 会话在别处失效时，把已经打开的题目页一并收走。
+   *
+   * 由闸门发现响应为登录页、或保活探测确认失效时调用：正在看的题面属于
+   * 「登录态下才该看到」的内容，登录掉了就得跟着消失，不能等用户下次点击。
+   */
+  public async applyAccessLoss(): Promise<void> {
+    if (!this.panel) { return; }
+    await this.renderDenied('LOGIN_REQUIRED');
   }
 
   /**
@@ -163,7 +216,12 @@ export class ProblemWebview {
     this.post({ command: 'refreshing', text: '正在刷新…' });
     try {
       const result = await this.deps.refresher.refreshOne(this.pid);
+      // 会话失效是刷新失败的一种特殊性质：应当换成登录提示，而不是只弹一句错误
       if (!result.ok) {
+        if (this.deps.access.sessionLost) {
+          await this.applyAccessLoss();
+          return result;
+        }
         this.post({
           command: 'banner',
           text: `刷新失败：${result.error ?? '未知错误'}`,
@@ -313,11 +371,17 @@ export class ProblemWebview {
 
     // 页面内「刷新」按钮（C3①）
     this.panel.webview.onDidReceiveMessage(async (msg: any) => {
+      // 登录提示页上的按钮：改登录页与「登录后回到本题」由扩展层编排
+      if (msg?.command === 'login') {
+        vscode.commands.executeCommand('oj.login');
+        return;
+      }
       if (msg?.command !== 'refreshProblem') { return; }
       const result = await this.refreshCurrent();
-      if (!result.ok) {
+      // 会话失效已由面板内的登录提示承接，不必再弹重复的失败提示
+      if (!result.ok && !this.deps.access.sessionLost) {
         vscode.window.showErrorMessage(`[OJ] 刷新题目失败：${result.error ?? '未知错误'}`);
-      } else {
+      } else if (result.ok) {
         vscode.window.showInformationMessage('[OJ] 题目缓存已刷新');
       }
     });
@@ -353,6 +417,53 @@ export class ProblemWebview {
   <h3>加载失败</h3>
   <p>${escapeHtml(message)}</p>
   <p class="hint">网络恢复后重新打开本题即可自动重建缓存</p>
+</div></body></html>`;
+  }
+
+  /**
+   * 登录提示页 —— 被闸门拦下时题目页位置显示的就是它。
+   *
+   * 「打开登录页」按钮不在这里直接开面板，而是把动作交回扩展（`oj.login`）：
+   * 登录页与「登录成功后回到这道题」都是扩展层的编排，webview 只管讲清楚
+   * 为什么看不了、以及下一步点哪。
+   */
+  private getLoginRequiredHtml(reason: AccessReason): string {
+    const title = reason === 'LOGIN_REQUIRED' ? '需要登录' : '离线且无本地缓存';
+    const detail = reason === 'LOGIN_REQUIRED'
+      ? '未登录时不提供比赛列表与题面。登录后会回到这道题。'
+      : '当前处于离线状态，而这道题在本机没有缓存，无法显示。';
+    const hint = reason === 'LOGIN_REQUIRED'
+      ? '本地已经写好的代码不受影响；登录后即可继续。'
+      : '联网打开过一次的题目，之后离线也能看。';
+    return `<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><style>
+  html { color-scheme: light; }
+  body { font-family: sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; color: #333; background: #fff; }
+  h3 { color: #b35c00; }
+  .detail { color: #555; }
+  .hint { color: #888; font-size: 12px; margin-top: 8px; }
+  button {
+    font: inherit; padding: 6px 18px; cursor: pointer; margin-top: 14px;
+    border: 1px solid #4CAF50; border-radius: 4px; background: #4CAF50; color: #fff;
+  }
+  button:hover { background: #43a047; }
+</style></head>
+<body><div style="text-align:center;">
+  <h3>${escapeHtml(title)}</h3>
+  <p class="detail">${escapeHtml(detail)}</p>
+  ${reason === 'LOGIN_REQUIRED'
+    ? '<button id="ojLoginBtn">打开登录页</button>'
+    : '<p class="hint">可在设置里关闭 <code>oj.cache.offline</code> 后重试，或等网络恢复。</p>'}
+  <p class="hint">${escapeHtml(hint)}</p>
+  <script>
+    (function () {
+      var vscode = acquireVsCodeApi();
+      var btn = document.getElementById('ojLoginBtn');
+      if (btn) {
+        btn.addEventListener('click', function () { vscode.postMessage({ command: 'login' }); });
+      }
+    })();
+  </script>
 </div></body></html>`;
   }
 

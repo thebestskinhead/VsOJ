@@ -33,6 +33,7 @@ import { initMcpChannel, showMcpChannel, disposeMcpChannel, clearMcpChannel } fr
 import { initCacheStore } from './cache/store';
 import { ProblemRefresher } from './cache/refresher';
 import { ConnectivityProbe } from './session/connectivity';
+import { AccessGate, LoginRequiredError } from './session/access';
 import { SessionGuard, needsRelogin, PendingIntent, classifyThrown } from './session/guard';
 import { SessionKeeper } from './session/keeper';
 import { parseProblemList } from './utils/parser';
@@ -91,12 +92,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     );
   }
 
-  const contestService = new ContestService(auth, cache, {
-    onIndexSynced: (cid, plan) => noteProblemShift(cid, plan),
-  });
-  const problemService = new ProblemService(cache);
-  const submitService = new SubmitService(auth, cache);
-
   // 网络可达性（S4.2）— 判定口径：拿到 HTTP 响应即视为可达，
   // 因此这里用 validateStatus 放行所有状态码，只在网络层失败时才抛错。
   const probe = new ConnectivityProbe({
@@ -109,6 +104,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     },
     log: (m) => logInfo(m),
   });
+
+  // 访问闸门 — 一切向站点取数的入口都先过它（比赛列表 / 题目列表 / 题面 / 状态 / 提交）。
+  // 「未登录不给看」在服务端不成立（公开比赛免登录渲染），所以这道门只能由本机把住。
+  const access = new AccessGate({
+    isLoggedIn: () => state.isLoggedIn(),
+    isForcedOffline: () => isOfflineMode(),
+    onSessionLost: () => { void handleSessionExpired(); },
+    log: (m) => logInfo(m),
+  });
+
+  const contestService = new ContestService(auth, access, cache, {
+    onIndexSynced: (cid, plan) => noteProblemShift(cid, plan),
+  });
+  const problemService = new ProblemService(access, cache);
+  const submitService = new SubmitService(auth, access, cache);
 
   // providers 在下方创建；配置监听注册得比它们早，因此用可变引用占位
   let contestTreeRef: ContestTreeProvider | undefined;
@@ -458,6 +468,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const problemWebview = new ProblemWebview(problemService, state, {
     store: cache,
     probe,
+    access,
     refresher: buildRefresher(resolveProblemCid),
     fetchAsset: (url) => apiClient.getBuffer(url, 'problem.asset'),
     log: (m) => logInfo(m),
@@ -556,9 +567,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   async function onLoginSuccess(): Promise<void> {
     await vscode.commands.executeCommand('setContext', 'oj.loggedIn', true);
     contestTreeProvider.refresh();
+    problemTreeProvider.refresh();
     // 换的是新会话：作废上一会话遗留的探测结论并立刻接上心跳，
     // 右下角状态栏随之显示新会话的状态，而不是等下一次定时探测才纠正
     sessionKeeper.sessionRenewed();
+    // 闸门也解除"会话失效"的静默标记，否则新会话再失效时不会提示
+    access.sessionRenewed();
     renderSessionStatus();
     vscode.window.showInformationMessage('[OJ] 登录成功');
     await replayPendingIntent();
@@ -595,7 +609,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!needsRelogin(outcome.kind)) { return; }
       // 提交入口是唯一需要「保留意图后重放」的地方：
       // 题目页能进、提交却失败时，登录完成后应回到这里继续。
-      void handleSessionExpired({ cid, pid, sourceFile, language });
+      void handleSessionExpired({ kind: 'submit', cid, pid, sourceFile, language });
     };
 
     const submitWebview = new SubmitWebview(
@@ -610,34 +624,60 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   /**
    * 登录失效统一处理。
    *
-   * @param intent 需要保留并重放的意图；仅由提交失败触发时传入。
+   * @param intent 需要保留并重放的意图；由提交失败、或由闸门发现响应已是登录页时传入。
    *               心跳/探测发现失效（用户处于空闲）时无意图，只做提醒。
    */
-  async function handleSessionExpired(intent?: Omit<PendingIntent, 'kind' | 'createdAt'>): Promise<void> {
+  async function handleSessionExpired(intent?: Omit<PendingIntent, 'createdAt'>): Promise<void> {
+    const wasLoggedIn = state.isLoggedIn();
     await state.setLoggedIn(false);
     renderSessionStatus();
+    // 登录态掉了，两个列表都得把内容换成登录提示 —— 否则过期后还能翻出旧列表
+    contestTreeProvider.refresh();
+    problemTreeProvider.refresh();
+    // 已经打开的题面也要一并收走：它整屏都是内容，留着就是「未登录也能看题」
+    await problemWebview.applyAccessLoss();
 
     if (intent) {
-      await sessionGuard.setPending({ kind: 'submit', ...intent });
-      logInfo(`[session] 已记录待重放提交意图 cid=${intent.cid} pid=${intent.pid}`);
+      await sessionGuard.setPending(intent);
+      logInfo(`[session] 已记录待重放意图 ${intent.kind} cid=${intent.cid} pid=${intent.pid}`);
+    } else if (!wasLoggedIn) {
+      // 本来就没登录：这条链路上已经有人报过一次，不重复打扰
+      return;
     }
 
     if (!getAutoRelogin()) {
       vscode.window.showWarningMessage(
-        '[OJ] 登录已过期：题目仍可浏览，但无法提交。请执行「OJ: 登录」后重试。',
+        '[OJ] 登录已过期：内容需重新登录后查看，提交同样不可用。请执行「OJ: 登录」后重试。',
       );
       return;
     }
 
-    const message = intent
+    const message = intent?.kind === 'submit'
       ? '[OJ] 登录已过期，本次提交未成功。重新登录后将自动返回原题目并继续提交。'
       : '[OJ] 登录已过期，请重新登录。';
     const hit = await vscode.window.showWarningMessage(message, '重新登录', '稍后处理');
     if (hit !== '重新登录') { return; }
 
-    await openLoginWebview(intent
+    await openLoginWebview(intent?.kind === 'submit'
       ? '登录已过期 — 登录成功后将自动返回原题目并打开提交页。'
       : '登录已过期 — 登录成功后将自动恢复保活与状态刷新。');
+  }
+
+  /**
+   * 未登录时被闸门拦下的主动访问：记下用户本来想去哪，然后打开登录页。
+   *
+   * 与 `handleSessionExpired` 的分工：那个是「会话刚刚失效」的被动通知，
+   * 这个是用户点了东西发现进不去时的主动引导。两者最终都落到同一个登录页，
+   * 登录成功后由 `replayPendingIntent` 把用户送回原处。
+   */
+  async function promptLogin(intent: Omit<PendingIntent, 'createdAt'>, notice: string): Promise<void> {
+    if (state.isLoggedIn()) {
+      // 登录态还在却被闸门拒绝，说明是「无权限」之类，不该引到登录页
+      vscode.window.showWarningMessage(`[OJ] ${notice}`);
+      return;
+    }
+    await sessionGuard.setPending(intent);
+    await openLoginWebview(notice);
   }
 
   /** 打开登录页；账号已保存时优先快捷登录（只需验证码） */
@@ -677,15 +717,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   /** 重新登录成功后：恢复比赛/题目上下文 → 打开原题目 → 回到提交页 */
   async function replayPendingIntent(force: boolean = false): Promise<void> {
-    if (!force && !getAutoReplaySubmit()) { return; }
+    const pending = await sessionGuard.peekPending();
+    if (!pending) { return; }
+    // 「自动重放提交」只约束提交：去看题、进比赛这类导航意图照常重放，
+    // 否则用户点了题目、登完录却什么都没发生
+    if (pending.kind === 'submit' && !force && !getAutoReplaySubmit()) { return; }
 
     const replayed = await sessionGuard.replay(async (intent) => {
+      // 进比赛：走既有命令，连带把「暂不 / 已同意」的会话状态重置掉
+      if (intent.kind === 'enter-contest') {
+        await vscode.commands.executeCommand('oj.enterContest', intent.cid);
+        return;
+      }
+
       await state.setCurrentCid(intent.cid);
       await state.setCurrentPid(intent.pid);
       problemTreeProvider.refresh();
 
       // 自动选择刚才的题目
       await problemWebview.show(intent.cid, intent.pid);
+      if (intent.kind === 'open-problem') { return; }
 
       const source = await readSourceForReplay(intent.sourceFile);
       if (!source.trim()) {
@@ -754,6 +805,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         renderSessionStatus();
         contestTreeProvider.refresh();
         problemTreeProvider.refresh();
+        // 已打开的题面不能留着：登录态没了，整屏的题目内容也该跟着消失
+        await problemWebview.applyAccessLoss();
         vscode.window.showInformationMessage('[OJ] 已登出');
       } catch (e: any) {
         vscode.window.showErrorMessage(`登出失败: ${e.message}`);
@@ -827,6 +880,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     vscode.commands.registerCommand('oj.enterContest', async (cid: string) => {
       try {
+        // 未登录不设「当前比赛」：设了侧边栏就会去拉题目列表，而列表会被闸门拒掉，
+        // 用户看到的是一个进不去的比赛。不如直接请他登录，登录后自动进来
+        const verdict = await access.check('problem-list', async () =>
+          (await cache.statContestPageHtml(cid)).exists);
+        if (verdict.kind === 'deny' && verdict.reason === 'LOGIN_REQUIRED') {
+          await promptLogin(
+            { kind: 'enter-contest', cid, pid: '' },
+            '未登录 — 登录成功后将自动进入该比赛。',
+          );
+          return;
+        }
+
         await state.setCurrentCid(cid);
         // 「暂不」与「已同意」只管本次会话：重新进入比赛时都重来一次（D19 / D21）
         beginContestSession(cid);
@@ -867,6 +932,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           },
         });
         if (!pid) { return; }
+
+        const verdict = await access.check('problem-list', async () =>
+          (await cache.statContestPageHtml(cid)).exists);
+        if (verdict.kind === 'deny' && verdict.reason === 'LOGIN_REQUIRED') {
+          await promptLogin(
+            { kind: 'open-problem', cid, pid },
+            '未登录 — 登录成功后将自动进入该比赛并打开这道题。',
+          );
+          return;
+        }
 
         // 进入比赛
         await state.setCurrentCid(cid);
@@ -1007,6 +1082,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         const actualCid = cid || state.getCurrentCid();
         if (!actualCid) {
           vscode.window.showErrorMessage('请先进入比赛');
+          return;
+        }
+
+        // 未登录不进后面那一串流程：既不建目录、也不动本地文件，
+        // 直接把用户送到登录页，登录成功后再打开这道题
+        const verdict = await access.check('problem', async () =>
+          (await cache.statProblemHtml(actualCid, pid)).exists);
+        if (verdict.kind === 'deny' && verdict.reason === 'LOGIN_REQUIRED') {
+          await promptLogin(
+            { kind: 'open-problem', cid: actualCid, pid },
+            '未登录 — 登录成功后将自动打开这道题。',
+          );
           return;
         }
 
@@ -1761,19 +1848,25 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         apiClient.lockCookies();
         console.log('[OJ] Cookie 已恢复');
 
-        const loggedIn = await auth.isLoggedIn();
-        if (loggedIn) {
+        const loggedIn = await auth.probeLogin();
+        if (loggedIn === true) {
           await vscode.commands.executeCommand('setContext', 'oj.loggedIn', true);
           console.log('[OJ] 登录态有效，免密登录成功');
-        } else {
-          // 失效会话：解锁并清空，保证后续登录能拿到新会话
+        } else if (loggedIn === false) {
+          // 站点明确说没登录：这份会话确实废了，清掉，保证后续登录能拿到新会话
           apiClient.unlockCookies();
           apiClient.clearCookies();
           console.log('[OJ] 登录态已过期，需要重新登录');
           await state.clearSessionCookie();
+          await state.setLoggedIn(false);
+        } else {
+          // 无法判定（网络不可用）：**保留**会话与登录态。
+          // 与「确认未登录」同样处理过一次，结果是断网启动一次就等于被登出一次。
+          console.log('[OJ] 网络不可用，无法校验登录态，保留已保存的会话');
         }
       } else {
         console.log('[OJ] 无已保存的会话，需要登录');
+        await state.setLoggedIn(false);
       }
     } catch (e: any) {
       console.error('[OJ] 会话恢复失败:', e);
@@ -1781,6 +1874,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }
 
   await restoreSession();
+  // 未登录就没有「当前比赛」：清掉残留下的 cid，
+  // 否则标题栏按钮按 oj.inContest 全部亮起，点下去却只会被闸门拦回来
+  if (!state.isLoggedIn()) {
+    await state.setCurrentCid(undefined);
+    await state.setCurrentPid(undefined);
+  }
   // 恢复完成后才允许 TreeView 加载数据，避免启动竞态
   contestTreeProvider.setReady();
 

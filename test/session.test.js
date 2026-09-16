@@ -12,7 +12,7 @@
  */
 
 const http = require('http');
-const { installVscodeStub, makeChecker, makeMemoryMemento, cleanup, sleep } = require('./helpers/stub');
+const { installVscodeStub, makeChecker, makeMemoryMemento, cleanup, sleep, makeAccessGate } = require('./helpers/stub');
 
 // 必须在 require 业务模块之前安装桩；baseUrl 稍后由本地服务器端口决定，
 // 因此先给占位值，再在服务器就绪后调用 apiClient.updateBaseUrl()
@@ -399,7 +399,7 @@ async function testEndToEnd() {
 
   const stateStub = { setLoggedIn: async () => {} };
   const auth = new AuthService(stateStub);
-  const svc = new SubmitService(auth);
+  const svc = new SubmitService(auth, makeAccessGate().gate);
 
   const call = () => svc.submit('3772', '0', 1, 'int main(){}', 'abcd');
 

@@ -9,7 +9,7 @@
 //   3) 运行时真产出的题目页必须白底深字。
 const fs = require('fs');
 const path = require('path');
-const { installVscodeStub, makeChecker } = require('./helpers/stub');
+const { installVscodeStub, makeChecker, makeAccessGate } = require('./helpers/stub');
 
 // 必须在 require 业务模块之前装桩（problem.ts → api/client.ts → utils/config.ts 会 import vscode）
 installVscodeStub();
@@ -32,7 +32,7 @@ const count = (text, needle) => text.split(needle).length - 1;
 
 // ── 1. 运行时产物：题目详情页 ───────────────────────────────────────────────
 console.log('[1] 题目详情页（buildProblemHtml 真产出）');
-const svc = new ProblemService();
+const svc = new ProblemService(makeAccessGate().gate);
 const detail = {
   cid: '3775', pid: '0', title: 'A + B Problem',
   description: '<p>求两数之和。</p>', inputDesc: '两个整数 a b',
@@ -64,9 +64,10 @@ const pages = sources
   .map(s => ({ rel: s.rel, docs: count(s.text, '<!DOCTYPE html>'), cs: count(s.text, 'color-scheme'), white: s.text.includes('#fff') }))
   .filter(p => p.docs > 0);
 
-// 题目页 / 登录页 / 账号页 / 提交页 / 本地测试结果页 / 提交结果页 / 工具链配置页 / 题目页失败兜底 …
+// 题目页 / 登录页 / 账号页 / 提交页 / 本地测试结果页 / 提交结果页 / 工具链配置页 /
+// 题目页的加载中与失败兜底、被闸门拒答时的登录提示页 …
 check('含内联页面的文件数', pages.length, 8);
-check('内联页面总数', pages.reduce((a, p) => a + p.docs, 0), 10);
+check('内联页面总数', pages.reduce((a, p) => a + p.docs, 0), 11);
 check('每个页面都有 color-scheme', pages.filter(p => p.cs !== p.docs).map(p => `${p.rel}(${p.docs}/${p.cs})`), []);
 check('每个页面都指定了白底', pages.filter(p => !p.white).map(p => p.rel), []);
 

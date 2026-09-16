@@ -5,6 +5,9 @@ import { getBaseUrl, getStaleTtlMs } from '../utils/config';
 import { escapeHtml } from '../utils/format';
 import { CacheStore, OfflineNoCacheError } from '../cache/store';
 import { planRevisit } from '../cache/revalidate';
+import { AccessGate, LoginRequiredError, throwIfDenied } from '../session/access';
+import { classifyHtmlBody } from '../session/guard';
+import { AccessError } from './contest';
 
 /**
  * 题目模块 — 题目详情获取与解析（渲染产物的构建也在此，历史原因）。
@@ -20,6 +23,10 @@ import { planRevisit } from '../cache/revalidate';
  *   凡是要**给用户或 AI 看题面**的地方都走这条（题目页、MCP 工具）。
  *
  * 这条分工不能含糊：一旦让 `fetchProblemHtml` 也去读缓存，刷新命令就会变成空操作。
+ *
+ * 「纯网络」不等于「不看响应」：取回的若是一张登录页，那就不是题面，
+ * 原语必须当场识破并抛出 {@link LoginRequiredError}，否则刷新器会把登录页
+ * 当成最新题面写进缓存。
  */
 
 /** 题目页渲染选项 */
@@ -57,10 +64,12 @@ export interface ProblemLoadOptions {
 }
 
 export class ProblemService {
+  private access: AccessGate;
   private store?: CacheStore;
 
   /** `store` 不传 = 没有缓存层（未接线 / 工作区外只读预览），闸门退化为直连站点 */
-  constructor(store?: CacheStore) {
+  constructor(access: AccessGate, store?: CacheStore) {
+    this.access = access;
     this.store = store;
   }
 
@@ -69,13 +78,34 @@ export class ProblemService {
    *
    * 缓存层保存的就是这份 HTML（见 `cache/paths.ts` 的「只存原始信息」原则），
    * 因此这是拉取与落盘的共同入口 —— 也正因如此，它必须保持"纯粹"。
+   *
+   * 唯一一处例外是**回应内容的核对**：取回登录页说明会话已失效，此时抛错
+   * 而不是把登录页交出去（见类注释）。
    */
   async fetchProblemHtml(cid: string, pid: string): Promise<string> {
     const response = await apiClient.get('/problem.php', {
       params: { cid, pid },
       headers: { 'Cache-Control': 'no-cache' },
     }, 'problem.fetchProblemHtml');
-    return typeof response.data === 'string' ? response.data : '';
+    const html = typeof response.data === 'string' ? response.data : '';
+    // 登录页特征：会话已在服务端失效，登录页不是题面，绝不可交出去
+    if (this.access.noteResponse(html)) {
+      throw new LoginRequiredError('problem', '登录已过期，请重新登录后继续');
+    }
+    // 受限页（私有比赛 / 未开始 / 题目不存在）同样不是题面：既不可渲染，也不可落盘。
+    // 先判断本地登录态是否已失效——站点把本应授权的请求判为未授权，说明会话早已作废，
+    // 应当走登录提示而非权限提示。
+    const kind = classifyHtmlBody(html);
+    if (kind === 'NO_PERMISSION' || kind === 'BAD_TARGET') {
+      if (!this.access.isLoggedIn()) {
+        this.access.noteSessionLost('题面受限且本地登录态已不可用');
+        throw new LoginRequiredError('problem', '登录已过期，请重新登录后继续');
+      }
+      throw new AccessError(kind === 'BAD_TARGET'
+        ? '题目不存在'
+        : '当前无权限查看该题目（可能未开始或为私有比赛）');
+    }
+    return html;
   }
 
   /**
@@ -89,21 +119,34 @@ export class ProblemService {
     Promise<ProblemHtmlResult> {
     const store = this.store;
 
+    const verdict = await this.access.check('problem', async () =>
+      (await this.store?.statProblemHtml(cid, pid))?.exists ?? false);
+    throwIfDenied(verdict, 'problem');
+
     if (!store) {
       const html = await this.fetchProblemHtml(cid, pid);
       return { html, source: 'network', ageMs: 0, refreshing: false };
     }
 
-    const offline = store.offline;
     const stat = await store.statProblemHtml(cid, pid);
+
+    // 1) 离线态：只吃缓存，过期也照给 —— 这正是离线做题的意义，不排后台刷新
+    if (verdict.kind === 'cache') {
+      const html = await store.readProblemHtml(cid, pid, { allowStale: true });
+      if (html !== undefined) {
+        return { html, source: 'cache', ageMs: stat.ageMs ?? 0, refreshing: false };
+      }
+      throw new OfflineNoCacheError('题目内容');
+    }
+
     const plan = planRevisit({
-      offline,
+      offline: store.offline,
       hasCache: stat.exists,
       ageMs: stat.ageMs,
       staleMs: getStaleTtlMs(),
     });
 
-    // 1) 缓存路径：首屏绝不阻塞在网络
+    // 2) 缓存路径：首屏绝不阻塞在网络
     if (!opts.force && plan.source === 'cache') {
       const html = await store.readProblemHtml(cid, pid, { allowStale: true });
       // 读得到才算命中：文件可能属于别的题（题集重排留下的），此时按未命中处理
@@ -121,11 +164,7 @@ export class ProblemService {
       }
     }
 
-    // 2) 网络路径：离线到这里就是「拿不到」而不是「没有」，必须让上层能分辨
-    if (offline) {
-      throw new OfflineNoCacheError('题目内容');
-    }
-
+    // 3) 网络路径
     const html = await this.fetchProblemHtml(cid, pid);
     await store.writeProblemHtml(cid, pid, html);
     return { html, source: 'network', ageMs: 0, refreshing: false };
@@ -153,8 +192,8 @@ export class ProblemService {
     try {
       ({ html, source, ageMs, refreshing } = await this.loadProblemHtml(cid, pid, opts));
     } catch (e: any) {
-      // 闸门拒答原样上抛：调用方要能区分「离线拿不到」与「站点上没有」
-      if (e instanceof OfflineNoCacheError) { throw e; }
+      // 闸门拒答 / 受限页原样上抛：调用方要能区分「离线拿不到 / 要登录 / 无权限」与「站点上没有」
+      if (e instanceof OfflineNoCacheError || e instanceof LoginRequiredError || e instanceof AccessError) { throw e; }
       console.error('[OJ] 题目详情加载失败:', e);
       throw new Error(`加载题目详情失败: ${e.message}`);
     }

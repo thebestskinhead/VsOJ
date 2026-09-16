@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { ContestService, AccessError } from '../api/contest';
 import { OfflineNoCacheError } from '../cache/store';
+import { LoginRequiredError } from '../session/access';
 import { StateManager } from '../utils/state';
 import { ProblemBrief, ProblemStatus } from '../types';
 import {
@@ -71,6 +72,12 @@ export class ProblemTreeProvider implements vscode.TreeDataProvider<ProblemTreeI
       ? [new ProblemTreeItem('加载中...', 'loading', vscode.TreeItemCollapsibleState.None)]
       : await this.loadBody(cid);
 
+    // 未登录就只剩这一条：题目列表、初始化入口都不该出现 ——
+    // 列表里连题目名字都不该露出来
+    if (body.length === 1 && body[0].itemType === 'login-required') {
+      return body;
+    }
+
     const entry = await this.buildInitEntry(cid, hasFolder);
     return [...placeholder, ...entry, ...body];
   }
@@ -97,6 +104,10 @@ export class ProblemTreeProvider implements vscode.TreeDataProvider<ProblemTreeI
         p,
       ));
     } catch (e: any) {
+      // 未登录：题目列表在闸门处就被拒了，这里只给登录提示
+      if (e instanceof LoginRequiredError) {
+        return [ProblemTreeItem.loginRequired()];
+      }
       if (e instanceof AccessError) {
         await this.state.setCurrentCid(undefined);
         await this.state.setCurrentPid(undefined);
@@ -214,6 +225,25 @@ export class ProblemTreeItem extends vscode.TreeItem {
       title: '打开文件夹',
       arguments: [],
     };
+    return item;
+  }
+
+  /**
+   * 未登录时的**唯一**条目。
+   *
+   * 整条可点 → 打开登录页。这里不放题目列表的「残影」：站点对公开比赛是免登录
+   * 渲染的，本机不把内容端出去才是唯一的闸门，而题目名字本身也算内容。
+   */
+  static loginRequired(): ProblemTreeItem {
+    const item = new ProblemTreeItem(
+      '未登录 · 点击登录后查看题目',
+      'login-required',
+      vscode.TreeItemCollapsibleState.None,
+    );
+    item.iconPath = new vscode.ThemeIcon('account');
+    item.tooltip = '未登录时不提供比赛列表与题面。登录成功后会回到你刚才打开的比赛。';
+    item.contextValue = '';
+    item.command = { command: 'oj.login', title: '登录' };
     return item;
   }
 

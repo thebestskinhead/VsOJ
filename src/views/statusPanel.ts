@@ -2,6 +2,8 @@ import * as vscode from 'vscode';
 import { SubmitService, StatusAjaxRow } from '../api/submit';
 import { StateManager } from '../utils/state';
 import { StatusRecord } from '../types';
+import { LoginRequiredError } from '../session/access';
+import { OfflineNoCacheError } from '../cache/store';
 import { getStatusPollInterval } from '../utils/config';
 import {
   isPending, resultNameOf, MAX_POLL_MS, MAX_POLL_INTERVAL_MS,
@@ -27,7 +29,9 @@ export class StatusPanel {
   private filterPid: string = '';
   /** 当前这一屏的记录（已按 filterPid 过滤） */
   private records: StatusRecord[] = [];
-  private src: { fromCache?: boolean; offlineNoCache?: boolean } = {};
+  private src: { fromCache?: boolean } = {};
+  /** 离线且无缓存：接住异常后置位，渲染信息栏时讲清（不把「读不到」显示成「无记录」） */
+  private offlineNoCache = false;
   /** 轮询代次：每次重开 / 停止都 +1，让在途的旧循环自己退出 */
   private pollGen: number = 0;
   /** 超时放弃的提交，不再重复轮询 */
@@ -123,7 +127,13 @@ export class StatusPanel {
           this.applyAjax(row.submitId, r);
           this.render();
           if (!isPending(r.resultCode)) { resolved = true; break; }
-        } catch {
+        } catch (e: any) {
+          // 会话失效：登录提示交给 onSessionLost 路径（降级登录态 + 弹登录提示 + 关面板），
+          // 这里直接停掉轮询，不再对同一条提交反复重试，免得一直空转到 MAX_POLL_MS 才放弃。
+          if (e instanceof LoginRequiredError) {
+            this.stopAutoRefresh();
+            return;
+          }
           // 网络抖动：保持同一节奏继续重试，不打断整条队列
         }
         wait = Math.min(wait * 2, MAX_POLL_INTERVAL_MS);
@@ -152,7 +162,7 @@ export class StatusPanel {
   private async loadAndRender(): Promise<boolean> {
     try {
       const cid = this.state.getCurrentCid();
-      if (!cid) { this.records = []; this.replace('  未进入比赛\n'); return false; }
+      if (!cid) { this.records = []; this.offlineNoCache = false; this.replace('  未进入比赛\n'); return false; }
       const userId = this.state.getStudentId() || '';
       // 本面板的每一条路径都是「用户要看最新的」——单次查看、手动刷新、自动刷新循环，
       // 因此一律绕过缓存新鲜度直取站点，否则刷新循环会在 TTL 内反复渲染同一份快照
@@ -160,10 +170,30 @@ export class StatusPanel {
       this.records = this.filterPid
         ? res.records.filter(r => r.problemId === this.filterPid)
         : res.records;
-      this.src = { fromCache: res.fromCache, offlineNoCache: res.offlineNoCache };
+      this.src = { fromCache: res.fromCache };
+      this.offlineNoCache = false;
       this.render();
       return true;
     } catch (e: any) {
+      // 未登录：提交状态不读缓存（那份记录可能已经不是这个人的），只请他去登录
+      if (e instanceof LoginRequiredError) {
+        this.stopAutoRefresh();
+        this.records = [];
+        this.src = {};
+        this.offlineNoCache = false;
+        this.replace('  需要登录：提交状态随登录态一起提供，请先执行「OJ: 登录」。\n');
+        return false;
+      }
+      // 离线且无缓存：渲染信息栏讲清，而不是把「读不到」显示成「无记录」
+      if (e instanceof OfflineNoCacheError) {
+        this.stopAutoRefresh();
+        this.records = [];
+        this.src = {};
+        this.offlineNoCache = true;
+        this.render();
+        return false;
+      }
+      this.offlineNoCache = false;
       this.replace(`  加载失败: ${e.message}\n`);
       return false;
     }
@@ -206,7 +236,7 @@ export class StatusPanel {
     }
     // 本面板的每次拉取都是「用户要看最新的」，一律直取站点（见 loadAndRender 的 force）；
     // 于是只有「网络失败降级到旧缓存」与「离线且无缓存」两种情形需要把来源说出来
-    if (this.src.offlineNoCache) hintParts.push('离线模式 · 无本地缓存');
+    if (this.offlineNoCache) hintParts.push('离线模式 · 无本地缓存');
     else if (this.src.fromCache) hintParts.push('离线缓存');
     const autoHint = hintParts.length ? ` [${hintParts.join(' | ')}]` : '';
 

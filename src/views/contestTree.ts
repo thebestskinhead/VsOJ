@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { ContestService } from '../api/contest';
 import { OfflineNoCacheError } from '../cache/store';
+import { LoginRequiredError } from '../session/access';
 import { StateManager } from '../utils/state';
 import { Contest, Pagination } from '../types';
 import { getBaseUrl, isOfflineMode } from '../utils/config';
@@ -98,10 +99,6 @@ export class ContestTreeProvider implements vscode.TreeDataProvider<ContestTreeI
 
     if (getBaseUrl() === 'http://localhost') {
       return [new ContestTreeItem('请先设置 OJ 平台地址，然后重启VSCode', 'config-hint', vscode.TreeItemCollapsibleState.None)];
-    }
-
-    if (!this.state.isLoggedIn()) {
-      return [new ContestTreeItem('请先登录 OJ 系统', 'login-hint', vscode.TreeItemCollapsibleState.None)];
     }
 
     try {
@@ -210,6 +207,10 @@ export class ContestTreeProvider implements vscode.TreeDataProvider<ContestTreeI
 
       return items;
     } catch (e: any) {
+      // 未登录：闸门在发请求之前就拒了，比赛列表一条都不显示
+      if (e instanceof LoginRequiredError) {
+        return [new ContestTreeItem('请先登录 OJ 系统', 'login-hint', vscode.TreeItemCollapsibleState.None)];
+      }
       // 离线且无缓存：说清是「拿不到」而不是「没有比赛」
       if (e instanceof OfflineNoCacheError) {
         return [new ContestTreeItem('离线模式 · 无本地缓存的比赛列表', 'empty', vscode.TreeItemCollapsibleState.None)];

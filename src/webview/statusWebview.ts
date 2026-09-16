@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import { StatusRecord, STATUS_CLASS_MAP } from '../types';
 import { StatusQueryResult, StatusAjaxRow } from '../api/submit';
+import { LoginRequiredError } from '../session/access';
+import { OfflineNoCacheError } from '../cache/store';
 import { escapeHtml, numToLetter } from '../utils/format';
 
 /**
@@ -107,7 +109,6 @@ export interface StatusPageModel {
   /** 当前题目字母；空串 = 不做「只看本题」过滤 */
   filterPid: string;
   fromCache: boolean;
-  offlineNoCache: boolean;
   loadedAt: string;
   pollIntervalMs: number;
   records: StatusRowView[];
@@ -120,7 +121,6 @@ export interface BuildStatusContext {
   /** 当前题目字母（数字 pid 由调用方转换）；缺省不过滤 */
   filterPid?: string;
   fromCache?: boolean;
-  offlineNoCache?: boolean;
   loadedAt?: string;
   pollIntervalMs?: number;
 }
@@ -167,7 +167,6 @@ export function buildStatusModel(records: StatusRecord[], ctx: BuildStatusContex
     userId: ctx.userId,
     filterPid,
     fromCache: !!ctx.fromCache,
-    offlineNoCache: !!ctx.offlineNoCache,
     loadedAt: ctx.loadedAt ?? new Date().toLocaleString(),
     pollIntervalMs: ctx.pollIntervalMs ?? 800,
     records: rows,
@@ -323,9 +322,9 @@ export function autoBadge(m: StatusPageModel): { state: 'on' | 'off' | 'err'; te
  * 亮色固定：不引用任何编辑器主题变量、在 `<html>` 上显式声明亮色配色方案、
  * 白底深字；状态色只用绿 / 红 / 琥珀 / 灰，无 emoji、无蓝紫（与题目页 / 测试结果页同一约定）。
  */
-export function buildStatusHtml(m: StatusPageModel): string {
+export function buildStatusHtml(m: StatusPageModel, opts: { offlineNoCacheNotice?: boolean } = {}): string {
   const badge = autoBadge(m);
-  const source = m.offlineNoCache
+  const source = opts.offlineNoCacheNotice
     ? '<div class="notice">离线模式，且本地没有这个比赛的状态缓存 —— 下面是从网络也拿不到数据时的空表</div>'
     : m.fromCache
       ? '<div class="notice">网络不可用，下面展示的是本地缓存里的记录，可能已过期</div>'
@@ -724,11 +723,54 @@ export class StatusWebview {
     try {
       res = await this.deps.loadRecords(opts.force ? { force: true } : undefined);
     } catch (e: any) {
-      this.deps.log?.(`拉取提交状态失败：${e.message}`);
+      // 未登录：状态表不读缓存（那份记录可能已经不是这个人的），只讲清要登录
+      if (e instanceof LoginRequiredError) {
+        const message = '需要登录后才能查看提交状态';
+        this.deps.log?.(`拉取提交状态失败：${message}`);
+        if (!this.panel) { return; }
+        if (opts.full) { this.panel.webview.html = buildStatusErrorHtml(message); return; }
+        this.post({ command: 'busy', on: false });
+        this.post({ command: 'notice', text: `拉取失败：${message}`, kind: 'err' });
+        this.post({ command: 'auto', state: 'err', text: '拉取失败' });
+        return;
+      }
+      // 离线且无缓存：与「返回空表 + 标志」时代等价 —— 渲染空表并附那条 notice，
+      // 而不是把「离线读不到」显示成「暂无提交记录」
+      if (e instanceof OfflineNoCacheError) {
+        if (!this.panel) { return; }
+        const model = buildStatusModel([], {
+          cid: this.deps.currentCid(),
+          userId: this.deps.currentUser(),
+          filterPid: this.pickFilterPid(),
+          fromCache: true,
+          loadedAt: new Date().toLocaleString(),
+          pollIntervalMs: this.deps.pollIntervalMs(),
+        });
+        this.model = model;
+        this.panel.title = `提交结果 · ${model.filterPid ? `${model.cid}-${model.filterPid}` : model.cid}`;
+        if (opts.full) {
+          this.panel.webview.html = buildStatusHtml(model, { offlineNoCacheNotice: true });
+        } else {
+          this.post({ command: 'busy', on: false });
+          this.post({
+            command: 'table',
+            rowsHtml: rowsHtml(model),
+            numbersHtml: numbersHtml(model),
+            loadedAt: model.loadedAt,
+            onlyCurrent: this.onlyCurrent,
+            hasFilter: !!model.filterPid,
+          });
+          this.post({ command: 'notice', text: '' });
+          this.post({ command: 'auto', ...this.badgePayload() });
+        }
+        return;
+      }
+      const message = e.message;
+      this.deps.log?.(`拉取提交状态失败：${message}`);
       if (!this.panel) { return; }
-      if (opts.full) { this.panel.webview.html = buildStatusErrorHtml(e.message); return; }
+      if (opts.full) { this.panel.webview.html = buildStatusErrorHtml(message); return; }
       this.post({ command: 'busy', on: false });
-      this.post({ command: 'notice', text: `拉取失败：${e.message}`, kind: 'err' });
+      this.post({ command: 'notice', text: `拉取失败：${message}`, kind: 'err' });
       this.post({ command: 'auto', state: 'err', text: '拉取失败' });
       return;
     }
@@ -742,7 +784,6 @@ export class StatusWebview {
       userId: this.deps.currentUser(),
       filterPid: this.pickFilterPid(),
       fromCache: res.fromCache,
-      offlineNoCache: res.offlineNoCache,
       loadedAt: new Date().toLocaleString(),
       pollIntervalMs: this.deps.pollIntervalMs(),
     });
@@ -806,6 +847,11 @@ export class StatusWebview {
           this.applyAjax(row.submitId, r);
           if (!isPending(r.resultCode)) { resolved = true; break; }
         } catch (e: any) {
+          // 会话失效：登录提示交给 onSessionLost 路径，停止轮询，不弹「继续重试」
+          if (e instanceof LoginRequiredError) {
+            this.pollGen += 1;
+            return;
+          }
           this.deps.log?.(`轮询提交 ${row.submitId} 失败：${e.message}`);
           this.post({ command: 'notice', text: `轮询失败（会继续重试）：${e.message}`, kind: 'err' });
         }
