@@ -13,7 +13,7 @@
 // 运行：node test/cache-gate.test.js
 const path = require('path');
 const fs = require('fs');
-const { installVscodeStub, makeChecker, sleep, makeAccessGate } = require('./helpers/stub');
+const { installVscodeStub, makeChecker, sleep, makeAccessGate, makeMemoryMemento } = require('./helpers/stub');
 
 const cfg = {
   'workspace.root': '.vsoj',
@@ -34,6 +34,9 @@ const { ProblemService } = require('../out/api/problem.js');
 const { SubmitService } = require('../out/api/submit.js');
 const { apiClient } = require('../out/api/client.js');
 const { LoginRequiredError } = require('../out/session/access.js');
+const { StateManager } = require('../out/utils/state.js');
+const { ProblemWebview } = require('../out/webview/problemWebview.js');
+const { StatusWebview } = require('../out/webview/statusWebview.js');
 
 const context = { globalStorageUri: { fsPath: GLOBAL_STORAGE } };
 const layout = CachePaths.resolve(context);
@@ -354,6 +357,86 @@ const submits = new SubmitService({ fetchCsrfToken: async () => 'tok' }, gate, s
     const row = await svc.fetchStatusAjax(4591960);
     check('正常判题内容能解析出结果码', row.resultCode, 4);
     check('正常内容不触发 onSessionLost', lost.n, before);
+  }
+
+  // ─────────── 11. 缓存关闭 / 清理 → 已渲染 surface 必须重新对齐现态 ───────────
+  console.log('\n[11] 缓存关闭 / 清理 · 已渲染 surface 收回（缺口二）');
+  {
+    // 捕获 webview 面板最后渲染的 html —— 「内容有没有真的在屏上 / 被收回」的唯一证据
+    const realCreatePanel = env.vscode.window.createWebviewPanel;
+    const panels = {};
+    env.vscode.window.createWebviewPanel = (viewType, ...rest) => {
+      const p = realCreatePanel(viewType, ...rest);
+      panels[viewType] = p;
+      return p;
+    };
+
+    const fakeCtx = {
+      globalState: makeMemoryMemento(), secrets: makeMemoryMemento(), subscriptions: [],
+    };
+    const realState = new StateManager(fakeCtx);
+    const gate = makeAccessGate({}).gate;
+
+    const pwv = new ProblemWebview(new ProblemService(gate, store), realState, {
+      store,
+      probe: { isReachable: () => true },
+      refresher: { refreshOne: async (pid) => ({ pid, ok: true }) },
+      access: gate,
+      fetchAsset: async () => Buffer.from(''),
+      log: () => {},
+    });
+    const mkStatusRecord = () => ({
+      submitId: 4591960, problemId: 'A', probName: '甲', resultCode: 4,
+      resultName: '答案正确', memory: 1, time: 1, language: 'C++',
+      codeLen: '912 B', submitTime: '2026-09-16',
+    });
+    const swv = new StatusWebview({
+      loadRecords: async () => ({ records: [mkStatusRecord()], fromCache: false }),
+      pollRow: async () => ({ resultCode: 4, memory: 1, time: 1, judger: 'J' }),
+      loadDetail: async () => ({ page: 'reinfo.php', text: 'x' }),
+      pollIntervalMs: () => 800,
+      currentCid: () => CID,
+      currentUser: () => '1',
+      currentPid: () => '0',
+      log: () => {},
+    });
+
+    // 先渲染：题面来自缓存（「读两个数」），状态页含真实记录 4591960
+    resetNet(() => ({ status: 200, data: problemPage('甲', '读两个数。') }));
+    await pwv.show(CID, '0');
+    await swv.show({ focus: true });
+    ok('题面已渲染（含「甲」）', /甲/.test(panels['ojProblemDetail'].webview.html));
+    ok('状态页已渲染（含真实记录 4591960）', /4591960/.test(panels['ojStatus'].webview.html));
+
+    // 模拟「清理缓存」：删掉本地题面 / 状态数据（数据已不在屏所对应的磁盘上）
+    fs.rmSync(cp.problemHtml('0'), { force: true });
+    fs.rmSync(cp.statusHtml, { force: true });
+
+    // 网络返回与缓存不同的内容，便于辨认「屏上已是重抓后的新内容、旧缓存已不在」
+    resetNet(() => ({ status: 200, data: problemPage('甲', '清理后重抓') }));
+    const netBefore = net.calls.length;
+    // 走 syncSurfacesToState 的同一套动作：题面重走 show、状态页 applyAccessLoss
+    await pwv.show(CID, '0');
+    await swv.applyAccessLoss();
+    ok('清理缓存后 · 题面旧缓存内容已从屏上消失', !/读两个数/.test(panels['ojProblemDetail'].webview.html));
+    ok('清理缓存后 · 题面已重抓为最新内容', /清理后重抓/.test(panels['ojProblemDetail'].webview.html));
+    ok('清理缓存后 · 题面确实联网重抓（未静默沿用已删数据）', net.calls.length > netBefore);
+    ok('清理缓存后 · 状态页已收回为登录提示', /需要登录后才能查看提交状态/.test(panels['ojStatus'].webview.html));
+    ok('清理缓存后 · 状态页真实记录已收回', !/4591960/.test(panels['ojStatus'].webview.html));
+
+    // 模拟「关闭缓存」（oj.cache.enabled=false）：站点数据不再落盘，但已落盘数据仍可读
+    // 收口语义：状态页收回为登录提示；题面按现态重判（缓存仍可读，重渲染同一份缓存题面，不凭空消失）
+    cfg['cache.enabled'] = false;
+    resetNet(() => { throw new Error('关闭缓存后不应联网（缓存仍可读）'); });
+    const netBefore2 = net.calls.length;
+    await pwv.show(CID, '0');
+    await swv.applyAccessLoss();
+    ok('关闭缓存后 · 状态页已收回为登录提示', /需要登录后才能查看提交状态/.test(panels['ojStatus'].webview.html));
+    ok('关闭缓存后 · 题面按现态重判、零请求（不静默沿用也不误联网）', net.calls.length === netBefore2);
+    ok('关闭缓存后 · 题面仍呈现（缓存可读，不凭空消失）', /甲/.test(panels['ojProblemDetail'].webview.html));
+    cfg['cache.enabled'] = true;
+
+    env.vscode.window.createWebviewPanel = realCreatePanel;
   }
 
   process.exit(done() ? 0 : 1);

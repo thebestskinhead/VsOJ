@@ -498,6 +498,28 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   });
 
   /**
+   * 工作区文件夹变化 → 题面只读结论要跟着「有没有工作区」重算。
+   *
+   * 没有文件夹时缓存根会退化到 globalStorage 兜底目录（跨窗口共享，既不该读也不该写），
+   * 所以题面只读、不读不写缓存；打开文件夹后这一结论应当立刻反转，已打开的题面按新结论重渲染。
+   * 结论复用 `workspace/guard.ts` 的 `decideOpenProblem(...).noCache`，不另写一套判断。
+   */
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      void rejudgeOpenProblemReadonly();
+    }),
+  );
+
+  /** 当前打开的题面整页按「有没有工作区」重新裁决缓存读写口径并就地重渲染 */
+  async function rejudgeOpenProblemReadonly(): Promise<void> {
+    if (!problemWebview.isOpen) { return; }
+    const { cid, pid } = problemWebview.current;
+    if (!cid || !pid) { return; }
+    const readOnly = decideOpenProblem(await projectFacts(cid, pid)).noCache;
+    await problemWebview.show(cid, pid, { readOnly });
+  }
+
+  /**
    * 结果页（S6.6）。判过期要读当前源文件 —— 优先内存中的文档，
    * 这样「改了但没保存」也会被标成「结果可能已过期」。
    */
@@ -581,10 +603,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     contestTreeProvider.refresh();
     problemTreeProvider.refresh();
 
-    // 题面整页「重新裁决」：当前有打开的题目才重走 show()，让闸门重新裁
-    if (problemWebview.isOpen && problemWebview.current.cid && problemWebview.current.pid) {
-      await problemWebview.show(problemWebview.current.cid, problemWebview.current.pid);
-    }
+    // 题面整页「重新裁决」：当前有打开的题目才重走 show()，让闸门重新裁。
+    // 缓存读写口径（有没有工作区）一并重算 —— 收口不该顺手把只读预览变回可写
+    await rejudgeOpenProblemReadonly();
 
     // 状态整页收口：登录态掉了就渲染登录提示，并停掉轮询
     statusWebview.applyAccessLoss();
@@ -1500,6 +1521,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
       problemTreeProvider.refresh();
       contestTreeProvider.refresh();
+      // 已渲染在屏幕上的题面 / 状态整页所依赖的本地数据已被删除，必须按现态重判或收回，
+      // 不能让旧内容留在屏上（与配置变更、登出走同一个收口入口）
+      void syncSurfacesToState();
       vscode.window.showInformationMessage(
         `[OJ] 已清理 ${done} 场比赛的缓存，释放约 ${formatBytes(bytes)}`,
       );

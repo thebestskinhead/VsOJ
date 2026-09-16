@@ -47,6 +47,7 @@ const { ContestTreeProvider } = require('../out/views/contestTree.js');
 const { ProblemTreeProvider } = require('../out/views/problemTree.js');
 const { StatusPanel } = require('../out/views/statusPanel.js');
 const { StatusRecord } = require('../out/types/index.js');
+const { decideOpenProblem, makeFacts } = require('../out/workspace/guard.js');
 
 const context = { globalStorageUri: { fsPath: GLOBAL_STORAGE } };
 const layout = CachePaths.resolve(context);
@@ -658,7 +659,14 @@ async function attempt(fn) {
     // 捕获 webview 面板最后渲染的 html —— 这是「内容有没有真的上屏/被收回」的唯一证据
     const realCreatePanel = env.vscode.window.createWebviewPanel;
     let capturedPanel = null;
-    env.vscode.window.createWebviewPanel = (...a) => { const p = realCreatePanel(...a); capturedPanel = p; return p; };
+    const posted = [];
+    env.vscode.window.createWebviewPanel = (...a) => {
+      const p = realCreatePanel(...a);
+      capturedPanel = p;
+      const realPost = p.webview.postMessage;
+      p.webview.postMessage = (m) => { posted.push(m); return realPost ? realPost(m) : undefined; };
+      return p;
+    };
     const mkPwv = (gate) => new ProblemWebview(new ProblemService(gate, store), realState, {
       store,
       probe: { isReachable: () => true },
@@ -736,6 +744,100 @@ async function attempt(fn) {
       ok('离线关 + 未登录 → 旧题面已收回', !/甲/.test(capturedPanel.webview.html));
       ok('离线关 + 未登录 → 仍零请求（被拦在发请求前）', totalHits() === 0);
       cfg['cache.offline'] = false;
+    }
+
+    // ── 缺口一：后台刷新失败必须按「会话是否失效」分两路，与手动刷新同口径 ──
+    {
+      // refreshOne 可控，用来构造「后台更新失败」
+      const refresher = { refreshOne: async () => ({ pid: '0', ok: true }) };
+      const mkPwv = (gate) => new ProblemWebview(new ProblemService(gate, store), realState, {
+        store,
+        probe: { isReachable: () => true },
+        refresher,
+        access: gate,
+        fetchAsset: async () => Buffer.from(''),
+        log: () => {},
+      });
+
+      // 1) 会话在后台刷新途中失效：整屏换成登录提示，旧题面收回（不再只换一句说明）
+      {
+        app.loggedIn = true;
+        cfg['cache.offline'] = true;
+        const gate = gateOf({ forcedOffline: true });
+        const pwv = mkPwv(gate);
+        await pwv.show(PUBLIC_CID, '0');
+        ok('题面已渲染（含「甲」）', /甲/.test(capturedPanel.webview.html));
+
+        // 模拟会话在后台刷新途中失效
+        gate.noteResponse(LOGIN_PAGE);
+        ok('会话已判定失效', gate.sessionLost);
+        refresher.refreshOne = async () => ({ pid: '0', ok: false });
+        posted.length = 0;
+        await pwv.backgroundRefresh();
+
+        ok('后台刷新会话失效 → 整屏换成登录提示', /需要登录/.test(capturedPanel.webview.html));
+        ok('后台刷新会话失效 → 旧题面已从屏上收回', !/甲/.test(capturedPanel.webview.html));
+      }
+
+      // 2) 后台刷新失败但非会话失效：只更新 banner 文案，不换成登录提示（保持 C8 静默契约）
+      {
+        app.loggedIn = true;
+        cfg['cache.offline'] = true;
+        const gate = gateOf({ forcedOffline: true });
+        const pwv = mkPwv(gate);
+        await pwv.show(PUBLIC_CID, '0');
+        ok('题面已渲染（含「甲」）', /甲/.test(capturedPanel.webview.html));
+        ok('会话未失效', !gate.sessionLost);
+
+        refresher.refreshOne = async () => ({ pid: '0', ok: false });
+        posted.length = 0;
+        await pwv.backgroundRefresh();
+
+        ok('后台刷新普通失败 → 仍显示题面（未换成登录提示）', /甲/.test(capturedPanel.webview.html));
+        ok('后台刷新普通失败 → 未出现登录提示', !/需要登录/.test(capturedPanel.webview.html));
+        ok('后台刷新普通失败 → 仅以 banner 提示「后台更新失败」',
+          posted.some((m) => m.command === 'banner' && /后台更新失败/.test(m.text || '')));
+        cfg['cache.offline'] = false;
+      }
+    }
+
+    // ── 缺口三：工作区文件夹变化 → 题面只读结论重算，已打开面板按新结论重渲染 ──
+    {
+      // 决策来源就是 workspace/guard.ts 的 decideOpenProblem(...).noCache：
+      // 无文件夹 → noCache=true（只读、不读不写缓存）；有文件夹 → noCache=false
+      check('无文件夹 → 题面判定为只读', decideOpenProblem(makeFacts({ hasFolder: false })).noCache, true);
+      check('有文件夹 → 题面判定为非只读', decideOpenProblem(makeFacts({ hasFolder: true })).noCache, false);
+
+      // 复用 show() 重走一次，模拟扩展里 onDidChangeWorkspaceFolders 的处理：
+      // readOnly = decideOpenProblem(projectFacts).noCache；按该结论重渲染当前面板
+      const rejudge = async (pwv, hasFolder) => {
+        const readOnly = decideOpenProblem(makeFacts({ hasFolder })).noCache;
+        await pwv.show(PUBLIC_CID, '0', { readOnly });
+      };
+
+      const gate = gateOf({});
+      const pwv = new ProblemWebview(new ProblemService(gate, store), realState, {
+        store,
+        probe: { isReachable: () => true },
+        refresher: { refreshOne: async (pid) => ({ pid, ok: true }) },
+        access: gate,
+        fetchAsset: async () => Buffer.from(''),
+        log: () => {},
+      });
+
+      // 先在无工作区窗口里打开题目（readOnly = true，只走网络、不读不写缓存）
+      app.loggedIn = true;
+      await rejudge(pwv, false);
+      ok('无文件夹 → 面板以只读预览渲染（不读不写缓存）', /只读预览/.test(capturedPanel.webview.html));
+
+      // 随后打开一个文件夹：结论应反转，面板按「非只读」重渲染（缓存路径可用）
+      await rejudge(pwv, true);
+      ok('打开文件夹后 → 面板重渲染、不再是以只读预览', !/只读预览/.test(capturedPanel.webview.html));
+      ok('打开文件夹后 → 题面仍正常呈现（含「甲」）', /甲/.test(capturedPanel.webview.html));
+
+      // 反向：关闭文件夹 → 结论回到只读，面板再次按新结论重渲染
+      await rejudge(pwv, false);
+      ok('关闭文件夹后 → 面板重新以只读预览渲染', /只读预览/.test(capturedPanel.webview.html));
     }
     env.vscode.window.createWebviewPanel = realCreatePanel;
   }

@@ -264,6 +264,12 @@ export class ProblemWebview {
     try {
       const result = await this.deps.refresher.refreshOne(this.pid);
       if (!result.ok) {
+        // 会话失效是刷新失败的一种特殊性质：应当换成登录提示，而不是只弹一句错误
+        // （与 refreshCurrent 同口径；其余失败仍静默降级，不弹窗 —— 契约 C8）
+        if (this.deps.access.sessionLost) {
+          await this.applyAccessLoss();
+          return;
+        }
         // 静默降级：回落到「缓存 + 更新失败」的表述，不弹窗
         const stat = await this.deps.store.statProblemHtml(this.cid, this.pid);
         this.post({
