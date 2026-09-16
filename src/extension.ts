@@ -50,7 +50,7 @@ import { TestToolService } from './test/tools';
 import { collectProblemResources } from './workspace/resources';
 import { registerOjTasks, OjTasksHandle } from './test/tasks';
 import {
-  INIT_CONFIRM_TEXT, InitConfirmations, InitEntryDismissals, NO_FOLDER_TEXT,
+  INIT_CONFIRM_TEXT, InitEntryDismissals, NO_FOLDER_TEXT,
   decideOpenProblem, decideSubmit, makeFacts,
 } from './workspace/guard';
 
@@ -324,18 +324,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // 避免同一条规则在三个地方写出三种措辞。
   // ==========================================
   const initDismissals = new InitEntryDismissals();
-  /** 本场比赛已同意写盘（D21）；与上面的「暂不」对称，进比赛时一并清空 */
-  const initConfirmations = new InitConfirmations();
 
   /**
-   * 进入比赛时重置本会话的两个回答（D19 / D21）。
+   * 进入比赛时重置本会话的「暂不」回答（D19）。
    *
-   * 「暂不」与「已同意」都只活在一次查看会话里 —— 重新进入比赛视为重看一次，
-   * 所以初始化条目要再出现、写盘要再问一遍。只清当前 cid：进别的比赛不影响本比赛。
+   * 只清当前 cid：进别的比赛不影响本比赛。
+   *
+   * 注：写盘许可以**比赛目录是否存在**为准（D21），不在这里重置 ——
+   * 目录已经在磁盘上就说明以前同意过，重新进入比赛也不该再问一遍。
    */
   function beginContestSession(cid: string): void {
     initDismissals.onEnterContest(cid);
-    initConfirmations.onEnterContest(cid);
   }
 
   /** 该比赛是否已初始化（比赛目录 + `meta.json` 存在） */
@@ -376,16 +375,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   /**
    * 问一次「要不要把这题写进当前文件夹」（D21）。
    *
-   * 三个回答：同意 / 这次只看题面 / 本场比赛别再问。**关掉提示框 = 只看题面** ——
+   * 两个回答：同意（初始化并打开）/ 只看题面。**关掉提示框 = 只看题面** ——
    * 默认落在最保守的那个选项上，没表态就不写盘。
+   *
+   * 用 `modal: true`（居中模态框）：这是一次**写盘授权**，不该混在右下角的通知流里
+   * 被随后进来的构建 / 语言服务提示挤掉；用户不回答就不继续。
    */
   async function askInitConfirm(): Promise<string | undefined> {
     return vscode.window.showWarningMessage(
       INIT_CONFIRM_TEXT.message,
-      { detail: INIT_CONFIRM_TEXT.detail, modal: false },
+      { detail: INIT_CONFIRM_TEXT.detail, modal: true },
       INIT_CONFIRM_TEXT.initAction,
       INIT_CONFIRM_TEXT.viewOnlyAction,
-      INIT_CONFIRM_TEXT.dismissAction,
     );
   }
 
@@ -403,7 +404,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       lazyInit: isLazyInitEnabled(),
       initEntryVisible: true,
       initEntryDismissed: initDismissals.isDismissed(cid),
-      initConfirmed: initConfirmations.isConfirmed(cid),
+      // 「已同意写盘」由目录是否存在表达（D21）：目录在 → 以前同意过，不再问
       contestInitialized: hasFolder ? await isContestInitialized(cid) : false,
       problemOnDisk,
     });
@@ -1072,7 +1073,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
       // 这条命令是用户亲手点的（侧边栏「初始化这题」/ MCP），本身即授权，不再问第二遍（D21）
       if (!decision.lazyInit && decision.reason !== 'needs-confirm') { return; }
-      initConfirmations.confirm(cid);
 
       const r = await buildInitializer(cid).ensureProblem({ pid });
       if (!r.ok) {
@@ -1092,8 +1092,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return;
       }
       if (!(await ensureFolderForProject())) { return; }
-      // 用户主动点了「初始化项目」（或跑了这条命令）→ 本场比赛视为已同意，后续点题不再问（D21）
-      initConfirmations.confirm(cid);
+      // 用户主动点了「初始化项目」（或跑了这条命令）→ 本身即授权，不额外弹窗；
+      // 建好后目录就在磁盘上，后续点题同样不再问（D21 的判据就是目录存在）
 
       // 题目列表缓存优先（离线且无缓存时给出可读失败，而不是空跑）
       let briefs: ProblemBrief[] = [];
@@ -1175,16 +1175,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           await ensureFolderForProject();
         }
 
-        // D21：写盘前先问一次；同意后本场比赛的后续题目不再问
+        // D21：需要新建比赛根目录时先问一次。同意与否以目录是否存在为准，
+        // 所以同意之后按「目录视为已存在」重算 —— 等价于「这个比赛已经同意过」。
         if (decision.confirmInit) {
           const pick = await askInitConfirm();
           if (pick === INIT_CONFIRM_TEXT.initAction) {
-            initConfirmations.confirm(actualCid);
-            decision = decideOpenProblem({ ...facts, initConfirmed: true });
-          } else if (pick === INIT_CONFIRM_TEXT.dismissAction) {
-            // 「不再问」与侧边栏的「暂不」同一份记忆：本场比赛不再初始化，条目也收起（D19）
-            initDismissals.dismiss(actualCid);
-            problemTreeProvider.refresh();
+            decision = decideOpenProblem({ ...facts, contestInitialized: true });
           }
         }
 

@@ -23,9 +23,11 @@
  * | 显示「初始化项目」条目 | ❌（显示占位项说明原因） | 视初始化状态而定 |
  *
  * **写盘一律要同意（D21）**：打开文件夹只是「有地方可写」，不等于「同意写」。
- * 首次要把某道题落进文件夹时先问一次（`decideOpenProblem` 的 `needs-confirm`），
- * 同意后本场比赛不再问；换一场比赛重新问。侧边栏的「初始化这题 / 初始化项目」
- * 是用户亲手点的，本身即授权，不再多问一遍。
+ * 需要**新建该比赛的根目录**时先问一次（`decideOpenProblem` 的 `needs-confirm`）。
+ * **同意与否以比赛目录是否存在为准**：目录已经在磁盘上，就说明以前征求过同意并写盘成功，
+ * 此后不再问 —— 也不再另外记一份「已同意」的状态（少一份状态，就少一处会与磁盘不一致的地方）。
+ * 所以选「只看题面」（不写盘）之后，下次打开题目还会再问一次。
+ * 侧边栏的「初始化这题 / 初始化项目」是用户亲手点的，本身即授权，不再多问一遍。
  */
 
 /** 决策所需的事实。全部由调用方从 vscode / 磁盘 / 配置读出后传入 */
@@ -40,9 +42,12 @@ export interface WorkspaceFacts {
   initEntryVisible: boolean;
   /** 本次会话中用户是否对该比赛点过「暂不」（D19） */
   initEntryDismissed: boolean;
-  /** 本次会话中用户是否已同意对该比赛写盘（D21；同意一次后本场比赛不再问） */
-  initConfirmed: boolean;
-  /** 该比赛是否已初始化（比赛目录存在且 `meta.json` 可读） */
+  /**
+   * 该比赛是否已初始化（比赛目录存在且 `meta.json` 可读）。
+   *
+   * 它同时就是「用户已同意过写盘」的凭据：目录能存在，只可能是以前征求过同意并写盘成功。
+   * 因此不再单独维护「已同意」标志 —— 需要新建根目录时才问，目录一旦存在就永不再问。
+   */
   contestInitialized: boolean;
   /** 该题是否已在磁盘上落地（`main.cpp` 存在） */
   problemOnDisk: boolean;
@@ -134,13 +139,12 @@ export const INIT_CONFIRM_TEXT = {
   /** 正文：说清「会写入什么」与「不写会怎样」 */
   detail:
     '初始化会把这题的题面、样例与源文件写进当前文件夹 —— 写完才能编译、测试与提交。'
-    + '选「只看题面」不会写任何文件。',
+    + '选「只看题面」不会写任何文件，下次打开题目时会再问一次；'
+    + '这个比赛的目录建好之后就不再问了。',
   /** 同意按钮 */
   initAction: '初始化并打开',
   /** 只读按钮 */
   viewOnlyAction: '只看题面',
-  /** 本场比赛不再问（同一次会话内；重新进入比赛会再问一次） */
-  dismissAction: '本次不再问',
 } as const;
 
 /** 由事实推导「打开一道题」的动作 */
@@ -167,15 +171,16 @@ export function decideOpenProblem(f: WorkspaceFacts): OpenProblemDecision {
     };
   }
   if (f.lazyInit) {
-    // D21：写盘前先问一次 —— 无论有没有打开文件夹，初始化都不该悄悄发生。
-    // 只问「要不要初始化」，不问「要不要建这一题」：同意一次后本场比赛的后续题目都不再问。
-    if (!f.initConfirmed) {
+    // D21：要建比赛根目录就得先同意 —— 无论有没有打开文件夹，初始化都不该悄悄发生。
+    // 判据是**目录在不在**（而不是「这次会话点过头」）：目录不存在 → 每次都重新征求同意；
+    // 目录已存在 → 以前同意过，直接懒初始化并分栏，不再问。
+    if (!f.contestInitialized) {
       return {
         promptOpenFolder: false, lazyInit: false, split: false, noCache: false,
         confirmInit: true, reason: 'needs-confirm',
       };
     }
-    // C3：已同意 → 懒初始化该题后立即分栏
+    // C3：已同意（目录已存在）→ 懒初始化该题后立即分栏
     return {
       promptOpenFolder: false, lazyInit: true, split: true, noCache: false,
       confirmInit: false, reason: 'needs-lazy-init',
@@ -251,38 +256,6 @@ export class InitEntryDismissals {
   }
 }
 
-/**
- * 「本场比赛已同意初始化」的记忆（D21）。
- *
- * 与 `InitEntryDismissals` 对称：一个记同意、一个记拒绝，都以比赛为单位、都只活在本次会话里，
- * **重新进入比赛时一并清空** —— 所以「不再问」的最长有效期就是这一次查看会话。
- *
- * 存内存而不落 `globalState`：写盘许可是「这次会话里你点过头」，
- * 不该跨启动继承（否则等于默认同意，确认也就没意义了）。
- */
-export class InitConfirmations {
-  private readonly confirmed = new Set<string>();
-
-  /** 用户在确认框里点了「初始化并打开」 */
-  public confirm(cid: string): void {
-    this.confirmed.add(cid);
-  }
-
-  /** 重新进入比赛 → 回到「还没问过」的状态 */
-  public onEnterContest(cid: string): void {
-    this.confirmed.delete(cid);
-  }
-
-  public isConfirmed(cid: string): boolean {
-    return this.confirmed.has(cid);
-  }
-
-  /** 供测试使用 */
-  public clear(): void {
-    this.confirmed.clear();
-  }
-}
-
 /** 便捷构造：从零散输入拼一份事实（缺省按「最保守」取值） */
 export function makeFacts(partial: Partial<WorkspaceFacts> = {}): WorkspaceFacts {
   return {
@@ -291,7 +264,6 @@ export function makeFacts(partial: Partial<WorkspaceFacts> = {}): WorkspaceFacts
     lazyInit: true,
     initEntryVisible: true,
     initEntryDismissed: false,
-    initConfirmed: false,
     contestInitialized: false,
     problemOnDisk: false,
     ...partial,

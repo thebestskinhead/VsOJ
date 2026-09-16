@@ -186,15 +186,16 @@
 | **S4** | 运行期缓存刷新 + 离线模式 | 详见 `docs/PLAN_S4.md`（契约 / 阶段 / 测试） | ✅ |
 | **S5** | 比赛项目初始化（懒初始化 / 全量预取 / 左代码右题目 / 无工作区守卫） | `src/workspace/initializer.ts`、`guard.ts`、`wiring.ts`、`openSource.ts`；布局 v2（**S6.11 起升为 v3**，题目目录改 `<全局题号>-<标题>`）；`test/{init,workspace-guard,project-tree,open-source}.test.js` | ✅ |
 | **S6** | 本地测试引擎 + MCP 扩展 | `src/test/*`、`src/config/*`、`src/workspace/resources.ts`、`src/webview/{testResult,status,toolchain}Webview.ts`；**9 个 MCP 工具**（4 个测试类）；`docs/PLAN_S6.md` | ✅ |
-| **S6.10** | 写盘前确认 + 装配类失败一律打开结果页 | 初始化前先问一次（初始化并打开 / 只看题面 / 本场不再问）；编译没过、工具链命令找不到时同样打开结果页 | ✅ |
+| **S6.10** | 写盘前确认 + 装配类失败一律打开结果页 | 初始化前先问一次（**S7.3 起**：判据改为「比赛目录是否存在」，弹窗改居中模态，不再有「本次不再问」）；编译没过、工具链命令找不到时同样打开结果页 | ✅ |
 | **S6.11** | 布局 v3 与题目索引按身份对齐（题目目录改 `<全局题号>-<标题>`，插题 / 删题不再错位） | `src/cache/{paths,store}.ts`、`src/utils/slug.ts`、`test/{sync,sync-stress}.test.js` | ✅ |
 | **S7** | 状态页静态化 | 自绘 `StatusWebview`，`statusPanel` 的代理渲染下线 | ✅ |
 | **S7.1** | 取数统一过访问闸门（未登录只走登录提示、免登录读缓存只由强制离线开关授权、状态一变即收口已渲染内容） | `src/session/access.ts`、`src/api/*`、`test/{access,cache-gate}.test.js` | ✅ |
 | **S7.2** | MCP 补测试用例工具 + 编译 / 测试支持指定源文件 | 新增 `add_test_case`（写 `samples/N.in` / `N.out`）；`compile_problem` / `run_local_test` 加 `source` 参数（默认 `main.cpp`，只接受题目目录内的文件名） | ✅ |
+| **S7.3** | 写盘确认改为「以比赛目录是否存在为准」+ 确认框居中 | 删除 `InitConfirmations`（同意状态不再单独存储）；需新建根目录时每次都问，目录存在即视为已同意；`askInitConfirm` 改 `modal: true`，按钮简化为两个 | ✅ |
 
 ### 测试与验证
 
-`npm test` 一次性跑完全部套件（**32 套件 / 2503 项断言**），全部脱离 VS Code 运行时
+`npm test` 一次性跑完全部套件（**32 套件 / 2502 项断言**），全部脱离 VS Code 运行时
 （`vscode` 模块桩 + 本地 HTTP 服务器）。**引擎套件不 mock 编译与执行** ——
 用本机真实的 g++ 编译真实源码、跑真实样例、比真实字节
 （找不到编译器时该组用例降级为 skip 并说明，不伪装成通过）。
@@ -211,7 +212,7 @@
 | `session` | 84 | 失效分类、登录页判定、意图重放与过期、保活时序与登录时的会话切换、对本地 HTTP 服务器端到端验证提交分类 |
 | `init` | 84 | `ensureProblem` 幂等 / 增量 / 离线 / 取消 / 失败汇总 / 骨架内容 / 目录命名 |
 | `runner` | 83 | 引擎：prepare/run/看门狗/复用/落盘，以及给结果页用的「只编译」形状，**真实 g++ 端到端**（含中文目录相对路径） |
-| `workspace-guard` | 80 | 无工作区穷举、提交闸门、条目可见性、暂不语义、写盘前确认（含两个回答的会话记忆） |
+| `workspace-guard` | 79 | 无工作区穷举、提交闸门、条目可见性、暂不语义、写盘前确认（以**比赛目录是否存在**为准，不单独存同意状态） |
 | `cache-gate` | 80 | 取数入口与缓存层边界：新鲜缓存零请求、过期联网落盘、离线无缓存抛 `OfflineNoCacheError`、题面走闸门而纯网络原语不读缓存、提交成功即作废状态缓存、缓存关闭或清理后已渲染内容重新对齐 |
 | `test-result-page` | 67 | 本地测试结果页：弹出的策略表（含「没能跑起来一律开」）、三种「未能开始」屏、注入转义、零脚本静态检查 |
 | `toolchain` | 65 | 工具链模型、命令解析与 PATH 推导、模板展开、部分覆盖 |

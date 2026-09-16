@@ -69,15 +69,15 @@ const { makeFacts } = G;
     check('未表态仍可使用 .vsoj 缓存', d.noCache, false);
   }
   {
-    // 打开文件夹只是「有地方可写」，不等于「同意写」—— 所以确认与否只差这一个事实
+    // 「同意写盘」的凭据就是**比赛目录已经存在** —— 所以确认与否只差这一个事实
     const f = makeFacts({
-      hasFolder: true, contestInitialized: false, problemOnDisk: false,
-      lazyInit: true, initConfirmed: true,
+      hasFolder: true, contestInitialized: true, problemOnDisk: false,
+      lazyInit: true,
     });
     const d = G.decideOpenProblem(f);
-    check('同意 → 写盘', d.lazyInit, true);
-    check('同意 → 分栏', d.split, true);
-    check('同意 → 不再问', d.confirmInit, false);
+    check('目录已存在（= 已同意）→ 写盘', d.lazyInit, true);
+    check('目录已存在 → 分栏', d.split, true);
+    check('目录已存在 → 不再问', d.confirmInit, false);
     check('原因', d.reason, 'needs-lazy-init');
   }
 
@@ -168,26 +168,21 @@ const { makeFacts } = G;
     check('clear 后重置', d.isDismissed('3772'), false);
   }
   {
-    console.log('  —— 已同意初始化（D21：与「暂不」对称，同样是本次会话的记忆）');
-    const c = new G.InitConfirmations();
-    check('初始未同意', c.isConfirmed('3772'), false);
+    console.log('  —— 写盘许可以「比赛目录是否存在」为准（D21：不单独存同意状态）');
+    ok('不再导出 InitConfirmations（同意状态不额外存一份）', !('InitConfirmations' in G));
 
-    c.confirm('3772');
-    check('同意后记为已确认', c.isConfirmed('3772'), true);
-    check('换个比赛不受影响', c.isConfirmed('3775'), false);
+    const base = { hasFolder: true, lazyInit: true, problemOnDisk: false, contestInitialized: false };
+    const need = G.decideOpenProblem(makeFacts(base));
+    check('目录不存在 → 每次都要先同意', need.confirmInit, true);
+    check('目录不存在 → 原因', need.reason, 'needs-confirm');
 
-    c.onEnterContest('3772');
-    check('重新进入比赛 → 要再问一次', c.isConfirmed('3772'), false);
+    const allowed = G.decideOpenProblem(makeFacts({ ...base, contestInitialized: true }));
+    check('目录已存在 → 视为已同意，不再问', allowed.confirmInit, false);
+    check('目录已存在 → 直接懒初始化', allowed.reason, 'needs-lazy-init');
 
-    c.confirm('3772');
-    c.onEnterContest('3775');
-    check('进入别的比赛不清本比赛的同意', c.isConfirmed('3772'), true);
-
-    c.clear();
-    check('clear 后重置', c.isConfirmed('3772'), false);
-    ok('确认文案：三按钮齐全',
-      !!G.INIT_CONFIRM_TEXT.initAction && !!G.INIT_CONFIRM_TEXT.viewOnlyAction
-      && !!G.INIT_CONFIRM_TEXT.dismissAction);
+    ok('确认文案：两个按钮',
+      !!G.INIT_CONFIRM_TEXT.initAction && !!G.INIT_CONFIRM_TEXT.viewOnlyAction);
+    ok('确认文案：不再提供「本次不再问」', !('dismissAction' in G.INIT_CONFIRM_TEXT));
     ok('确认文案：说明会写入什么', G.INIT_CONFIRM_TEXT.detail.includes('写'));
     ok('确认文案：说明不写会怎样', G.INIT_CONFIRM_TEXT.detail.includes('只看题面'));
   }
@@ -201,8 +196,7 @@ const { makeFacts } = G;
     check('默认懒初始化开', f.lazyInit, true);
     check('默认条目允许', f.initEntryVisible, true);
     check('默认未暂不', f.initEntryDismissed, false);
-    check('默认未确认写盘', f.initConfirmed, false);
-    check('默认未初始化', f.contestInitialized, false);
+    check('默认未初始化（= 未同意写盘）', f.contestInitialized, false);
     check('默认题未落地', f.problemOnDisk, false);
     check('默认无缓存可用', G.decideOpenProblem(f).noCache, true);
   }
