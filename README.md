@@ -12,7 +12,7 @@ OJ 在线判题平台 VS Code 插件，让你在 VS Code 内完成全部 OJ 操�
 - **题目详情** — Webview Panel 渲染题目 HTML（图片 base64 内联）
 - **代码提交** — 一键提交当前编辑器代码（快捷键 `Ctrl+Shift+S`）
 - **状态查询** — 三合一状态查看：内嵌 Webview 页面 / 底部 Output 文本表格 / 系统浏览器打开，支持自动轮询刷新
-- **本地缓存** — 比赛 / 题目 / 状态写入工作区缓存目录（默认 `.vsoj/`），支撑离线浏览与后续的本地测试能力
+- **本地缓存** — 比赛 / 题目 / 状态写入**比赛项目文件夹**（`<cid>-<标题>/`，建在工作区根下、可见），比赛列表缓存写入内部数据根（默认 `.vsoj/`），支撑离线浏览与本地测试
 - **本地测试** — 对着站点样例跑自己的代码：编译 → 逐用例严格比对（先归一化换行，等价站点 Linux 判题环境）→ 结果页两级展示（用例列表 → 期望 / 实际 / 差异定位）。带超时 / 输出体积 / 内存三道看门狗，也能作为 `oj` 任务在终端里实时看输出；**AI 也能跑这条路**（MCP：`add_test_case` / `compile_problem` / `run_local_test` / `get_last_test_result`，见 [可用的 MCP 工具](#可用的-mcp-工具)）
 
 ## 配置
@@ -33,7 +33,8 @@ OJ 在线判题平台 VS Code 插件，让你在 VS Code 内完成全部 OJ 操�
 
 其余 24 项都有合理默认值，按需再调。
 
-工具链（本地测试用哪个编译器）不在 VS Code 设置里，而在 `.vsoj/toolchains.json`：
+工具链的**定义**（用哪个编译器、编译 / 运行命令模板）不在 VS Code 设置里，而在 `.vsoj/toolchains.json`
+（设置里只有「用哪套」「去哪找」这类开关）：
 内置 C/C++、Java、Python 四套，你只需要写**要覆盖的字段**，例如把 g++ 指到你的便携环境：
 
 ```json
@@ -72,7 +73,7 @@ OJ 在线判题平台 VS Code 插件，让你在 VS Code 内完成全部 OJ 操�
 | `oj.nextContestPage` | — | 比赛列表下一页 |
 | `oj.jumpContestPage` | — | 比赛列表跳转到指定页 |
 | `oj.refreshProblems` | — | 刷新题目列表 |
-| `oj.project.openFolder` | — | 打开当前比赛的项目文件夹 |
+| `oj.project.openFolder` | — | 打开文件夹（选择工作区文件夹；无工作区时的占位项与提醒按钮都指向它） |
 | `oj.project.initialize` | — | 初始化比赛项目（全量预取，带进度、可取消） |
 | `oj.project.initializeProblem` | — | 初始化本题（题面 / 样例 / 图片 / 源码骨架） |
 | `oj.project.dismissInitEntry` | — | 暂不初始化（本次会话隐藏该条目） |
@@ -107,7 +108,7 @@ OJ 的登录态完全绑定 `PHPSESSID`，服务端会话有效期取决于 `ses
 - 探测：每 `oj.session.probeInterval`（默认 10 分钟）复用插件既有的登录态判定逻辑
 - 心跳连续失败 3 次才会升级为一次探测，避免网络抖动被误判成「登录过期」
 
-状态栏右下角常驻显示会话状态：`✅ OJ 已登录` / `⚠️ OJ 登录已过期` / `⛔ OJ 未登录`，点击可查看详情。
+状态栏右下角常驻显示会话状态：`OJ 已登录` / `OJ 登录已过期` / `OJ 未登录`（各带一枚状态图标），点击可查看详情。
 登录成功后状态栏立即更新，不需要等下一次心跳；保活也随登录自动接上。
 
 ### 为什么「提交页能进、提交却失败」
@@ -232,7 +233,7 @@ MCP 服务器启动后监听 `http://127.0.0.1:{port}/mcp`（默认 9527 端口�
 
 ### 可用的 MCP 工具
 
-MCP 协议提供了以下工具供 AI Agent 调用：
+MCP 协议提供了 **9 个**工具供 AI Agent 调用（5 个只读 / 配置类 + 4 个测试类）：
 
 **1. get_config_manual** ⭐ 配置本插件前先读这个
 
@@ -363,6 +364,11 @@ curl -X POST http://127.0.0.1:9527/mcp \
 curl -X POST http://127.0.0.1:9527/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"get_contest_problems","arguments":{"cid":"1000"}}}'
+
+# 给当前题目补一组测试用例（写入 samples/，之后 run_local_test 会一起跑）
+curl -X POST http://127.0.0.1:9527/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"add_test_case","arguments":{"input":"3 4\n","output":"7\n"}}}'
 ```
 
 ## 常见问题
@@ -370,11 +376,13 @@ curl -X POST http://127.0.0.1:9527/mcp \
 **Q: 登录后验证码显示不出来？**
 A: 检查 `oj.baseUrl` 是否配置正确，确保 OJ 服务器可访问。
 
-**Q: 提交代码时提示"无 CSRF Token"？**
-A: 确保已正确登录，CSRF Token 在首次访问 OJ 页面时获取。
+**Q: 提交代码时提示"无法获取 CSRF Token，请确认已登录"？**
+A: 说明当前会话已不可用（提交所需的 CSRF Token 取不到），按「登录已过期」处理 —— 重新登录后重试即可。
 
 **Q: 题目中的图片显示为裂图？**
-A: 图片加载失败时会显示占位符，检查网络连接和 OJ 服务器状态。
+A: 题面图片在初始化这道题时抓取并落盘，显示时内联（`data:` URI），所以正常情况离线也能看。
+裂图意味着那张图当时没抓到、或这道题还没初始化：页面对这种情况会保留图片的原始链接，
+离线时自然加载不出来。联网后重新初始化该题（或执行「刷新本题缓存」）即可补上。
 
 **Q: 重启 VS Code 后需要重新登录？**
 A: 如果 Cookie 未过期会自动恢复登录态。如果过期，重新登录即可。
